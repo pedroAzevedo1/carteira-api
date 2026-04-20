@@ -4,7 +4,7 @@ import pdfplumber
 import re
 
 app = Flask(__name__)
-CORS(app)  # permite requisições do seu site (WordPress)
+CORS(app)
 
 # =========================
 # UTIL
@@ -28,24 +28,51 @@ def parse_percent(value):
         return None
 
 # =========================
+# CLASSIFICAÇÃO
+# =========================
+def classificar(ativo, moeda):
+    nome = ativo.upper()
+
+    if moeda == "USD":
+        return "Internacional"
+
+    if any(x in nome for x in ["FII", "FUNDO", "ETF"]):
+        return "Renda Variável"
+
+    if re.match(r'^[A-Z]{4}\d{1,2}$', nome):  # tipo PETR4
+        return "Renda Variável"
+
+    return "Renda Fixa"
+
+# =========================
 # PARSER XP
 # =========================
 def parse_xp(text):
     data = []
 
-    pattern = re.findall(
-        r'([A-Za-z0-9\s\.\-]+)\sR\$\s([\d\.,]+).*?([\-\d\,]+%)',
-        text
-    )
+    if "POSIÇÃO DETALHADA DOS ATIVOS" not in text:
+        return data
 
-    for match in pattern:
-        data.append({
-            "ativo": match[0].strip(),
-            "valor": parse_brl(match[1]),
-            "rentabilidade": parse_percent(match[2]),
-            "moeda": "BRL",
-            "fonte": "XP"
-        })
+    section = text.split("POSIÇÃO DETALHADA DOS ATIVOS")[1]
+    lines = section.split("\n")
+
+    for line in lines:
+        match = re.search(r'(.+?)\sR\$\s([\d\.,]+)', line)
+
+        if match:
+            nome = match.group(1).strip()
+            valor = parse_brl(match.group(2))
+
+            if len(nome) < 3:
+                continue
+
+            data.append({
+                "ativo": nome,
+                "valor": valor,
+                "rentabilidade": None,
+                "moeda": "BRL",
+                "classe": classificar(nome, "BRL")
+            })
 
     return data
 
@@ -61,35 +88,65 @@ def parse_avenue(text):
     )
 
     for match in pattern:
+        ativo = match[0]
+
         data.append({
-            "ativo": match[0],
+            "ativo": ativo,
             "valor": parse_usd(match[1]),
             "rentabilidade": parse_percent(match[2]),
             "moeda": "USD",
-            "fonte": "Avenue"
+            "classe": "Internacional"
         })
 
     return data
 
 # =========================
-# DETECÇÃO
+# DETECTOR
 # =========================
 def detect_parser(text):
-    if "XPerformance" in text or "XP" in text:
+    if "XP" in text or "XPerformance" in text:
         return parse_xp(text)
-    else:
-        return parse_avenue(text)
+    return parse_avenue(text)
 
 # =========================
-# ROTA PRINCIPAL
+# CONSOLIDA ATIVOS
+# =========================
+def consolidar_ativos(carteira):
+    consolidado = {}
+
+    for item in carteira:
+        chave = item["ativo"]
+
+        if chave not in consolidado:
+            consolidado[chave] = item.copy()
+        else:
+            consolidado[chave]["valor"] += item["valor"]
+
+    return list(consolidado.values())
+
+# =========================
+# CONSOLIDA CLASSES
+# =========================
+def consolidar_classes(carteira):
+    classes = {}
+
+    for item in carteira:
+        classe = item["classe"]
+
+        if classe not in classes:
+            classes[classe] = 0
+
+        classes[classe] += item["valor"]
+
+    return [{"classe": k, "valor": v} for k, v in classes.items()]
+
+# =========================
+# ROTA
 # =========================
 @app.route('/upload', methods=['POST'])
 def upload():
     try:
         files = request.files.getlist('files')
-
-        if not files:
-            return jsonify({"error": "Nenhum arquivo enviado"}), 400
 
         carteira = []
 
@@ -100,13 +157,15 @@ def upload():
                 for page in pdf.pages:
                     text += page.extract_text() or ""
 
-                ativos = detect_parser(text)
-                carteira.extend(ativos)
+                carteira.extend(detect_parser(text))
+
+        ativos = consolidar_ativos(carteira)
+        classes = consolidar_classes(ativos)
 
         return jsonify({
             "status": "ok",
-            "total_ativos": len(carteira),
-            "ativos": carteira
+            "ativos": ativos,
+            "classes": classes
         })
 
     except Exception as e:
@@ -115,15 +174,9 @@ def upload():
             "mensagem": str(e)
         }), 500
 
-# =========================
-# ROTA TESTE
-# =========================
 @app.route('/')
 def home():
-    return "API de Consolidação de Carteira funcionando 🚀"
+    return "API rodando 🚀"
 
-# =========================
-# RUN LOCAL
-# =========================
 if __name__ == '__main__':
     app.run(debug=True)
