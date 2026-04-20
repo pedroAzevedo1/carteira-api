@@ -30,22 +30,22 @@ def parse_percent(value):
 # =========================
 # CLASSIFICAÇÃO
 # =========================
-def classificar(ativo, moeda):
-    nome = ativo.upper()
+def classificar(nome, moeda):
+    nome = nome.upper()
 
     if moeda == "USD":
         return "Internacional"
 
-    if any(x in nome for x in ["FII", "FUNDO", "ETF"]):
+    if re.match(r'^[A-Z]{4}\d{1,2}$', nome):
         return "Renda Variável"
 
-    if re.match(r'^[A-Z]{4}\d{1,2}$', nome):  # tipo PETR4
+    if "FII" in nome or "ETF" in nome or "FUNDO" in nome:
         return "Renda Variável"
 
     return "Renda Fixa"
 
 # =========================
-# PARSER XP
+# PARSER XP (CORRIGIDO)
 # =========================
 def parse_xp(text):
     data = []
@@ -59,20 +59,31 @@ def parse_xp(text):
     for line in lines:
         match = re.search(r'(.+?)\sR\$\s([\d\.,]+)', line)
 
-        if match:
-            nome = match.group(1).strip()
-            valor = parse_brl(match.group(2))
+        if not match:
+            continue
 
-            if len(nome) < 3:
-                continue
+        nome = match.group(1).strip()
+        valor = parse_brl(match.group(2))
+        nome_upper = nome.upper()
 
-            data.append({
-                "ativo": nome,
-                "valor": valor,
-                "rentabilidade": None,
-                "moeda": "BRL",
-                "classe": classificar(nome, "BRL")
-            })
+        # 🚫 FILTRO DE LIXO
+        if (
+            len(nome) < 4
+            or any(x in nome_upper for x in [
+                "TOTAL", "VALOR", "POSIÇÃO", "LISTADOS",
+                "RENDA FIXA", "RENDA VARIÁVEL", "PÓS",
+                "TESOURO", "APLICAÇÃO", "SALDO"
+            ])
+        ):
+            continue
+
+        data.append({
+            "ativo": nome,
+            "valor": valor,
+            "rentabilidade": None,
+            "moeda": "BRL",
+            "classe": classificar(nome, "BRL")
+        })
 
     return data
 
@@ -88,10 +99,8 @@ def parse_avenue(text):
     )
 
     for match in pattern:
-        ativo = match[0]
-
         data.append({
-            "ativo": ativo,
+            "ativo": match[0],
             "valor": parse_usd(match[1]),
             "rentabilidade": parse_percent(match[2]),
             "moeda": "USD",
@@ -111,32 +120,49 @@ def detect_parser(text):
 # =========================
 # CONSOLIDA ATIVOS
 # =========================
-def consolidar_ativos(carteira):
-    consolidado = {}
+def consolidar_ativos(lista):
+    mapa = {}
 
-    for item in carteira:
+    for item in lista:
         chave = item["ativo"]
 
-        if chave not in consolidado:
-            consolidado[chave] = item.copy()
+        if chave not in mapa:
+            mapa[chave] = {
+                **item,
+                "somaRent": (item["rentabilidade"] or 0) * item["valor"],
+                "valorTotal": item["valor"]
+            }
         else:
-            consolidado[chave]["valor"] += item["valor"]
+            mapa[chave]["valor"] += item["valor"]
+            mapa[chave]["somaRent"] += (item["rentabilidade"] or 0) * item["valor"]
+            mapa[chave]["valorTotal"] += item["valor"]
 
-    return list(consolidado.values())
+    resultado = []
+
+    for item in mapa.values():
+        rent = None
+        if item["valorTotal"] > 0 and item["somaRent"] > 0:
+            rent = item["somaRent"] / item["valorTotal"]
+
+        resultado.append({
+            "ativo": item["ativo"],
+            "valor": item["valor"],
+            "moeda": item["moeda"],
+            "classe": item["classe"],
+            "rentabilidade": rent
+        })
+
+    return resultado
 
 # =========================
 # CONSOLIDA CLASSES
 # =========================
-def consolidar_classes(carteira):
+def consolidar_classes(lista):
     classes = {}
 
-    for item in carteira:
-        classe = item["classe"]
-
-        if classe not in classes:
-            classes[classe] = 0
-
-        classes[classe] += item["valor"]
+    for item in lista:
+        c = item["classe"]
+        classes[c] = classes.get(c, 0) + item["valor"]
 
     return [{"classe": k, "valor": v} for k, v in classes.items()]
 
@@ -147,13 +173,11 @@ def consolidar_classes(carteira):
 def upload():
     try:
         files = request.files.getlist('files')
-
         carteira = []
 
         for file in files:
             with pdfplumber.open(file) as pdf:
                 text = ""
-
                 for page in pdf.pages:
                     text += page.extract_text() or ""
 
@@ -178,5 +202,5 @@ def upload():
 def home():
     return "API rodando 🚀"
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     app.run(debug=True)
