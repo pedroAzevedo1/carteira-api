@@ -1,0 +1,4 @@
+flask
+pdfplumber
+gunicorn
+flask-cors
