@@ -1,66 +1,107 @@
-from flask import Flask, request, jsonify, send_file
+from flask import Flask, request, jsonify
 from flask_cors import CORS
 import pdfplumber
 import re
-from io import BytesIO
-from reportlab.platypus import SimpleDocTemplate, Table
 
 app = Flask(__name__)
 CORS(app)
 
 # =========================
-# FILTROS INTELIGENTES
+# UTIL
 # =========================
 
-def linha_valida(nome):
-    if not nome:
-        return False
+def limpar_texto(texto):
+    if not texto:
+        return ""
+    texto = texto.replace("\xa0", " ")
+    texto = re.sub(r"\s+", " ", texto)
+    return texto.strip()
 
-    nome = nome.strip().upper()
 
-    # Ignorar lixo comum
-    invalidos = [
-        "DATA", "PERÍODO", "MES", "MÊS", "ANO",
-        "TOTAL", "SALDO", "POSIÇÃO", "RENTABILIDADE",
-        "EVOLUÇÃO", "VALOR", "R$", "USD"
+def is_linha_valida(linha):
+    linha = linha.upper()
+
+    # ignora lixo comum dos PDFs
+    lixo = [
+        "DATA", "MÊS", "MES", "ANO", "TOTAL", "SALDO",
+        "POSIÇÃO", "POSICAO", "EXTRATO", "RENTABILIDADE",
+        "VALORIZAÇÃO", "VALOR TOTAL"
     ]
 
-    if any(x in nome for x in invalidos):
+    if any(l in linha for l in lixo):
         return False
 
-    # Ignorar datas tipo "jan/26"
-    if re.match(r"^[A-Z]{3}/\d{2}$", nome):
+    # precisa ter número (valor)
+    if not re.search(r"\d", linha):
         return False
 
-    # Nome muito curto
-    if len(nome) < 2:
+    # precisa ter pelo menos uma palavra (ativo)
+    if len(linha.split()) < 2:
         return False
 
     return True
 
 
-def extrair_valor(texto):
-    if not texto:
-        return 0
-
-    texto = texto.replace(".", "").replace(",", ".")
-
-    nums = re.findall(r"\d+\.\d+", texto)
-    return float(nums[0]) if nums else 0
-
-
-def extrair_percentual(texto):
-    if not texto:
-        return 0
-
-    match = re.search(r"-?\d+[\.,]?\d*%", texto)
+def extrair_valor(linha):
+    # USD ou BRL
+    match = re.search(r'(\$|R\$)\s?([\d.,]+)', linha)
     if match:
-        return float(match.group().replace("%", "").replace(",", "."))
-    return 0
+        valor = match.group(2).replace(".", "").replace(",", ".")
+        try:
+            return float(valor)
+        except:
+            return 0.0
+    return 0.0
+
+
+def extrair_moeda(linha):
+    if "$" in linha:
+        return "USD"
+    if "R$" in linha:
+        return "BRL"
+    return "BRL"
+
+
+def extrair_rentabilidade(linha):
+    match = re.search(r'(-?\d+[.,]?\d*)%', linha)
+    if match:
+        val = match.group(1).replace(",", ".")
+        try:
+            return float(val)
+        except:
+            return 0.0
+    return 0.0
+
+
+def extrair_nome(linha):
+    # remove valores e %
+    linha = re.sub(r'(\$|R\$)\s?[\d.,]+', '', linha)
+    linha = re.sub(r'-?\d+[.,]?\d*%', '', linha)
+
+    partes = linha.split()
+
+    # pega primeiras palavras como nome
+    nome = " ".join(partes[:4])
+    return nome.strip()
+
+
+def classificar(nome):
+    nome = nome.upper()
+
+    if any(x in nome for x in ["TESOURO", "CDB", "LCI", "LCA", "RENDA FIXA"]):
+        return "Renda Fixa"
+
+    if any(x in nome for x in ["FII", "FUND", "ETF", "AÇÕES", "ACAO", "STOCK"]):
+        return "Renda Variável"
+
+    if any(x in nome for x in ["USD", "ETF", "TREASURY", "BOND"]):
+        return "Internacional"
+
+    return "Outros"
 
 
 # =========================
-# LEITURA DE PDF
+# PROCESSAMENTO DO PDF
 # =========================
 
 def processar_pdf(file):
@@ -76,124 +117,62 @@ def processar_pdf(file):
             linhas = texto.split("\n")
 
             for linha in linhas:
-                partes = linha.split()
+                linha = limpar_texto(linha)
 
-                if len(partes) < 3:
+                if not is_linha_valida(linha):
                     continue
 
-                nome = " ".join(partes[:-2])
-                valor_str = partes[-2]
-                rent_str = partes[-1]
-
-                if not linha_valida(nome):
-                    continue
-
-                valor = extrair_valor(valor_str)
-                rent = extrair_percentual(rent_str)
-
+                valor = extrair_valor(linha)
                 if valor == 0:
                     continue
 
-                moeda = "USD" if "$" in linha else "BRL"
+                nome = extrair_nome(linha)
+                moeda = extrair_moeda(linha)
+                rent = extrair_rentabilidade(linha)
+                classe = classificar(nome)
 
                 ativos.append({
-                    "nome": nome.strip(),
+                    "ativo": nome,
                     "valor": valor,
+                    "moeda": moeda,
                     "rentabilidade": rent,
-                    "moeda": moeda
+                    "classe": classe
                 })
 
     return ativos
 
 
 # =========================
-# CONSOLIDAÇÃO
+# ROTAS
 # =========================
 
-def classificar(nome):
-    nome = nome.upper()
+@app.route("/upload", methods=["POST"])
+def upload():
+    if "file" not in request.files:
+        return jsonify({"erro": "Arquivo não enviado"}), 400
 
-    if any(x in nome for x in ["TESOURO", "CDB", "LCI", "LCA", "RF"]):
-        return "Renda Fixa"
+    file = request.files["file"]
 
-    if any(x in nome for x in ["FII", "IMOB", "JURO"]):
-        return "FII"
+    try:
+        ativos = processar_pdf(file)
 
-    if any(x in nome for x in ["ETF", "SPY", "IVV", "QQQ"]):
-        return "ETF"
+        if not ativos:
+            return jsonify({
+                "erro": "Nenhum ativo identificado. PDF pode estar em formato diferente."
+            }), 400
 
-    return "Ações"
+        return jsonify({
+            "ativos": ativos
+        })
 
-
-def consolidar(ativos, cambio):
-    total = 0
-    total_ponderado = 0
-
-    for a in ativos:
-        valor = a["valor"]
-
-        if a["moeda"] == "USD":
-            valor *= cambio
-
-        total += valor
-        total_ponderado += valor * a["rentabilidade"]
-
-    rent_total = (total_ponderado / total) if total > 0 else 0
-
-    return total, rent_total
+    except Exception as e:
+        return jsonify({
+            "erro": str(e)
+        }), 500
 
 
-# =========================
-# API
-# =========================
-
-@app.route("/processar", methods=["POST"])
-def processar():
-    files = request.files.getlist("files")
-    cambio = float(request.form.get("cambio", 5.0))
-
-    carteira = []
-
-    for file in files:
-        carteira.extend(processar_pdf(file))
-
-    total, rent = consolidar(carteira, cambio)
-
-    return jsonify({
-        "ativos": carteira,
-        "total": total,
-        "rentabilidade": rent
-    })
-
-
-# =========================
-# EXPORTAR PDF
-# =========================
-
-@app.route("/exportar", methods=["POST"])
-def exportar():
-    dados = request.json
-
-    buffer = BytesIO()
-    doc = SimpleDocTemplate(buffer)
-
-    tabela = [["Ativo", "Valor", "Rent (%)"]]
-
-    for a in dados["ativos"]:
-        tabela.append([
-            a["nome"],
-            f"{a['valor']:.2f}",
-            f"{a['rentabilidade']:.2f}%"
-        ])
-
-    table = Table(tabela)
-    doc.build([table])
-
-    buffer.seek(0)
-    return send_file(buffer, as_attachment=True, download_name="carteira.pdf")
-
-
-if __name__ == "__main__":
-    app.run()
+@app.route("/")
+def home():
+    return "API Carteira OK 🚀"
 
 
