@@ -1,4 +1,5 @@
-flask
-flask-cors
-pdfplumber
-pymupdf
+flask==3.0.0
+flask-cors==4.0.0
+pdfplumber==0.10.3
+reportlab==4.0.8
+gunicorn==21.2.0
