@@ -1,163 +1,197 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 import pdfplumber
-import fitz
 import re
+from io import BytesIO
+from reportlab.platypus import SimpleDocTemplate, Table
 
 app = Flask(__name__)
 CORS(app)
 
 # =========================
-def limpar(texto):
-    texto = texto.replace("\xa0", " ")
-    texto = re.sub(r'\s+', ' ', texto)
-    return texto
+# FILTROS INTELIGENTES
+# =========================
+
+def linha_valida(nome):
+    if not nome:
+        return False
+
+    nome = nome.strip().upper()
+
+    # Ignorar lixo comum
+    invalidos = [
+        "DATA", "PERÍODO", "MES", "MÊS", "ANO",
+        "TOTAL", "SALDO", "POSIÇÃO", "RENTABILIDADE",
+        "EVOLUÇÃO", "VALOR", "R$", "USD"
+    ]
+
+    if any(x in nome for x in invalidos):
+        return False
+
+    # Ignorar datas tipo "jan/26"
+    if re.match(r"^[A-Z]{3}/\d{2}$", nome):
+        return False
+
+    # Nome muito curto
+    if len(nome) < 2:
+        return False
+
+    return True
+
+
+def extrair_valor(texto):
+    if not texto:
+        return 0
+
+    texto = texto.replace(".", "").replace(",", ".")
+
+    nums = re.findall(r"\d+\.\d+", texto)
+    return float(nums[0]) if nums else 0
+
+
+def extrair_percentual(texto):
+    if not texto:
+        return 0
+
+    match = re.search(r"-?\d+[\.,]?\d*%", texto)
+    if match:
+        return float(match.group().replace("%", "").replace(",", "."))
+    return 0
+
 
 # =========================
-def normalizar_rent(valor):
-    try:
-        v = float(str(valor).replace(",", "."))
-        if v > 1:
-            v /= 100
-        return v
-    except:
-        return None
-
+# LEITURA DE PDF
 # =========================
-def detectar_moeda(linha):
-    if "$" in linha or "USD" in linha:
-        return "USD"
-    if "R$" in linha or "BRL" in linha:
-        return "BRL"
-    return None
 
-# =========================
-def extrair_valor(linha, moeda):
-    try:
-        if moeda == "USD":
-            m = re.search(r'\$ ?([\d,\.]+)', linha)
-            if m:
-                return float(m.group(1).replace(",", ""))
-
-        if moeda == "BRL":
-            m = re.search(r'R\$ ?([\d\.\,]+)', linha)
-            if m:
-                return float(m.group(1).replace(".", "").replace(",", "."))
-    except:
-        return None
-    return None
-
-# =========================
-def extrair_rent(linha):
-    m = re.search(r'(-?[\d\.,]+)%', linha)
-    if m:
-        return normalizar_rent(m.group(1))
-    return None
-
-# =========================
-def extrair_nome(linha):
-    partes = linha.split()
-    for p in partes:
-        if any(c.isdigit() for c in p):
-            continue
-        if len(p) < 3:
-            continue
-        return p
-    return partes[0]
-
-# =========================
-def classificar(ativo, moeda):
-    if moeda == "USD":
-        return "Internacional"
-    if re.match(r'^[A-Z]{4}\d{1,2}$', ativo):
-        return "Renda Variável"
-    return "Renda Fixa"
-
-# =========================
-def extrair_ativos(texto):
+def processar_pdf(file):
     ativos = []
-    linhas = texto.split("\n")
 
-    for linha in linhas:
-        linha = limpar(linha.strip())
+    with pdfplumber.open(file) as pdf:
+        for page in pdf.pages:
+            texto = page.extract_text()
 
-        if len(linha) < 10:
-            continue
+            if not texto:
+                continue
 
-        lixo = ["MÊS", "ANO", "TOTAL", "SALDO", "DATA"]
-        if any(p in linha.upper() for p in lixo):
-            continue
+            linhas = texto.split("\n")
 
-        moeda = detectar_moeda(linha)
-        if not moeda:
-            continue
+            for linha in linhas:
+                partes = linha.split()
 
-        valor = extrair_valor(linha, moeda)
-        if not valor or valor < 1:
-            continue
+                if len(partes) < 3:
+                    continue
 
-        nome = extrair_nome(linha)
+                nome = " ".join(partes[:-2])
+                valor_str = partes[-2]
+                rent_str = partes[-1]
 
-        if nome.upper() in ["R$", "USD", "BRL"]:
-            continue
+                if not linha_valida(nome):
+                    continue
 
-        if re.match(r'\w{3}/\d{2}', nome.lower()):
-            continue
+                valor = extrair_valor(valor_str)
+                rent = extrair_percentual(rent_str)
 
-        rent = extrair_rent(linha)
+                if valor == 0:
+                    continue
 
-        ativos.append({
-            "ativo": nome,
-            "valor": valor,
-            "moeda": moeda,
-            "classe": classificar(nome, moeda),
-            "rentabilidade": rent
-        })
+                moeda = "USD" if "$" in linha else "BRL"
+
+                ativos.append({
+                    "nome": nome.strip(),
+                    "valor": valor,
+                    "rentabilidade": rent,
+                    "moeda": moeda
+                })
 
     return ativos
 
-# =========================
-def ler_pdf(file):
-    texto = ""
-
-    try:
-        with pdfplumber.open(file) as pdf:
-            for page in pdf.pages:
-                t = page.extract_text()
-                if t:
-                    texto += t + "\n"
-    except:
-        pass
-
-    if not texto:
-        file.seek(0)
-        doc = fitz.open(stream=file.read(), filetype="pdf")
-        for page in doc:
-            texto += page.get_text()
-
-    return texto
 
 # =========================
-@app.route("/upload", methods=["POST"])
-def upload():
+# CONSOLIDAÇÃO
+# =========================
+
+def classificar(nome):
+    nome = nome.upper()
+
+    if any(x in nome for x in ["TESOURO", "CDB", "LCI", "LCA", "RF"]):
+        return "Renda Fixa"
+
+    if any(x in nome for x in ["FII", "IMOB", "JURO"]):
+        return "FII"
+
+    if any(x in nome for x in ["ETF", "SPY", "IVV", "QQQ"]):
+        return "ETF"
+
+    return "Ações"
+
+
+def consolidar(ativos, cambio):
+    total = 0
+    total_ponderado = 0
+
+    for a in ativos:
+        valor = a["valor"]
+
+        if a["moeda"] == "USD":
+            valor *= cambio
+
+        total += valor
+        total_ponderado += valor * a["rentabilidade"]
+
+    rent_total = (total_ponderado / total) if total > 0 else 0
+
+    return total, rent_total
+
+
+# =========================
+# API
+# =========================
+
+@app.route("/processar", methods=["POST"])
+def processar():
     files = request.files.getlist("files")
-    todos = []
+    cambio = float(request.form.get("cambio", 5.0))
+
+    carteira = []
 
     for file in files:
-        texto = ler_pdf(file)
-        ativos = extrair_ativos(texto)
-        todos.extend(ativos)
+        carteira.extend(processar_pdf(file))
+
+    total, rent = consolidar(carteira, cambio)
 
     return jsonify({
-        "status": "ok",
-        "ativos": todos
+        "ativos": carteira,
+        "total": total,
+        "rentabilidade": rent
     })
 
-# =========================
-@app.route("/")
-def home():
-    return "API OK"
 
 # =========================
+# EXPORTAR PDF
+# =========================
+
+@app.route("/exportar", methods=["POST"])
+def exportar():
+    dados = request.json
+
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(buffer)
+
+    tabela = [["Ativo", "Valor", "Rent (%)"]]
+
+    for a in dados["ativos"]:
+        tabela.append([
+            a["nome"],
+            f"{a['valor']:.2f}",
+            f"{a['rentabilidade']:.2f}%"
+        ])
+
+    table = Table(tabela)
+    doc.build([table])
+
+    buffer.seek(0)
+    return send_file(buffer, as_attachment=True, download_name="carteira.pdf")
+
+
 if __name__ == "__main__":
-    app.run(debug=True)
+    app.run()
