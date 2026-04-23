@@ -7,200 +7,121 @@ app = Flask(__name__)
 CORS(app)
 
 # =========================
-# UTIL
+# NORMALIZA RENTABILIDADE
 # =========================
-def parse_brl(value):
-    try:
-        return float(value.replace('.', '').replace(',', '.'))
-    except:
-        return 0
+def normalizar_rent(rent):
+    if rent is None:
+        return None
 
-def parse_usd(value):
     try:
-        return float(value.replace(',', ''))
-    except:
-        return 0
+        rent = float(rent)
 
-def parse_percent(value):
-    try:
-        return float(value.replace(',', '.').replace('%', ''))
+        # Se vier como 3 (3%), vira 0.03
+        if rent > 1:
+            rent = rent / 100
+
+        return rent
     except:
         return None
+
 
 # =========================
 # CLASSIFICAÇÃO
 # =========================
-def classificar(nome, moeda):
-    nome = nome.upper()
+def classificar(ativo, moeda):
+    ativo = ativo.upper()
 
     if moeda == "USD":
         return "Internacional"
 
-    if re.match(r'^[A-Z]{4}\d{1,2}$', nome):
+    if re.match(r'^[A-Z]{4}\d{1,2}$', ativo):
         return "Renda Variável"
 
-    if "FII" in nome or "ETF" in nome or "FUNDO" in nome:
+    if "FII" in ativo or "ETF" in ativo:
         return "Renda Variável"
 
     return "Renda Fixa"
 
+
 # =========================
-# PARSER XP (CORRIGIDO)
+# PARSER GENÉRICO
 # =========================
-def parse_xp(text):
-    data = []
+def extrair_ativos(texto):
+    ativos = []
 
-    if "POSIÇÃO DETALHADA DOS ATIVOS" not in text:
-        return data
+    linhas = texto.split("\n")
 
-    section = text.split("POSIÇÃO DETALHADA DOS ATIVOS")[1]
-    lines = section.split("\n")
+    for linha in linhas:
+        # Remove espaços duplicados
+        linha = re.sub(r'\s+', ' ', linha).strip()
 
-    for line in lines:
-        match = re.search(r'(.+?)\sR\$\s([\d\.,]+)', line)
+        # =========================
+        # PADRÃO USD (Avenue)
+        # =========================
+        match_usd = re.match(r'([A-Z]{2,5})\s+\$?([\d,\.]+)\s+USD\s+(-?[\d\.]+)%', linha)
 
-        if not match:
+        if match_usd:
+            nome = match_usd.group(1)
+            valor = float(match_usd.group(2).replace(",", ""))
+            rent = normalizar_rent(match_usd.group(3))
+
+            ativos.append({
+                "ativo": nome,
+                "valor": valor,
+                "moeda": "USD",
+                "classe": classificar(nome, "USD"),
+                "rentabilidade": rent
+            })
             continue
 
-        nome = match.group(1).strip()
-        valor = parse_brl(match.group(2))
-        nome_upper = nome.upper()
+        # =========================
+        # PADRÃO BRL (XP)
+        # =========================
+        match_brl = re.match(r'(.+?)\s+R\$ ?([\d\.,]+)\s+BRL\s+(-?[\d\.,]+)%', linha)
 
-        # 🚫 FILTRO DE LIXO
-        if (
-            len(nome) < 4
-            or any(x in nome_upper for x in [
-                "TOTAL", "VALOR", "POSIÇÃO", "LISTADOS",
-                "RENDA FIXA", "RENDA VARIÁVEL", "PÓS",
-                "TESOURO", "APLICAÇÃO", "SALDO"
-            ])
-        ):
+        if match_brl:
+            nome = match_brl.group(1).strip()
+            valor = float(match_brl.group(2).replace(".", "").replace(",", "."))
+            rent = normalizar_rent(match_brl.group(3).replace(",", "."))
+
+            ativos.append({
+                "ativo": nome,
+                "valor": valor,
+                "moeda": "BRL",
+                "classe": classificar(nome, "BRL"),
+                "rentabilidade": rent
+            })
             continue
 
-        data.append({
-            "ativo": nome,
-            "valor": valor,
-            "rentabilidade": None,
-            "moeda": "BRL",
-            "classe": classificar(nome, "BRL")
-        })
+    return ativos
 
-    return data
-
-# =========================
-# PARSER AVENUE
-# =========================
-def parse_avenue(text):
-    data = []
-
-    pattern = re.findall(
-        r'([A-Z]{2,5})\s.*?\s([\d\.,]+)\s([\+\-]?\d+,\d+%)',
-        text
-    )
-
-    for match in pattern:
-        data.append({
-            "ativo": match[0],
-            "valor": parse_usd(match[1]),
-            "rentabilidade": parse_percent(match[2]),
-            "moeda": "USD",
-            "classe": "Internacional"
-        })
-
-    return data
-
-# =========================
-# DETECTOR
-# =========================
-def detect_parser(text):
-    if "XP" in text or "XPerformance" in text:
-        return parse_xp(text)
-    return parse_avenue(text)
-
-# =========================
-# CONSOLIDA ATIVOS
-# =========================
-def consolidar_ativos(lista):
-    mapa = {}
-
-    for item in lista:
-        chave = item["ativo"]
-
-        if chave not in mapa:
-            mapa[chave] = {
-                **item,
-                "somaRent": (item["rentabilidade"] or 0) * item["valor"],
-                "valorTotal": item["valor"]
-            }
-        else:
-            mapa[chave]["valor"] += item["valor"]
-            mapa[chave]["somaRent"] += (item["rentabilidade"] or 0) * item["valor"]
-            mapa[chave]["valorTotal"] += item["valor"]
-
-    resultado = []
-
-    for item in mapa.values():
-        rent = None
-        if item["valorTotal"] > 0 and item["somaRent"] > 0:
-            rent = item["somaRent"] / item["valorTotal"]
-
-        resultado.append({
-            "ativo": item["ativo"],
-            "valor": item["valor"],
-            "moeda": item["moeda"],
-            "classe": item["classe"],
-            "rentabilidade": rent
-        })
-
-    return resultado
-
-# =========================
-# CONSOLIDA CLASSES
-# =========================
-def consolidar_classes(lista):
-    classes = {}
-
-    for item in lista:
-        c = item["classe"]
-        classes[c] = classes.get(c, 0) + item["valor"]
-
-    return [{"classe": k, "valor": v} for k, v in classes.items()]
 
 # =========================
 # ROTA
 # =========================
-@app.route('/upload', methods=['POST'])
+@app.route("/upload", methods=["POST"])
 def upload():
-    try:
-        files = request.files.getlist('files')
-        carteira = []
+    files = request.files.getlist("files")
 
-        for file in files:
-            with pdfplumber.open(file) as pdf:
-                text = ""
-                for page in pdf.pages:
-                    text += page.extract_text() or ""
+    todos_ativos = []
 
-                carteira.extend(detect_parser(text))
+    for file in files:
+        with pdfplumber.open(file) as pdf:
+            texto = ""
+            for page in pdf.pages:
+                texto += page.extract_text() + "\n"
 
-        ativos = consolidar_ativos(carteira)
-        classes = consolidar_classes(ativos)
+            ativos = extrair_ativos(texto)
+            todos_ativos.extend(ativos)
 
-        return jsonify({
-            "status": "ok",
-            "ativos": ativos,
-            "classes": classes
-        })
+    return jsonify({
+        "status": "ok",
+        "ativos": todos_ativos
+    })
 
-    except Exception as e:
-        return jsonify({
-            "status": "erro",
-            "mensagem": str(e)
-        }), 500
 
-@app.route('/')
-def home():
-    return "API rodando 🚀"
-
+# =========================
+# START
+# =========================
 if __name__ == "__main__":
     app.run(debug=True)
