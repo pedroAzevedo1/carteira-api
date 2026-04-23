@@ -1,118 +1,209 @@
+```python
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import pdfplumber
 import re
 
 app = Flask(__name__)
-CORS(app, resources={r"/*": {"origins": "*"}})
+CORS(app)
 
 # =========================
 # UTIL
 # =========================
-
-def limpar(texto):
-    return re.sub(r"\s+", " ", texto.replace("\xa0", " ")).strip()
-
-def extrair_valor(linha):
-    m = re.search(r'(R\$|\$)\s?([\d\.,]+)', linha)
-    if not m:
-        return None
-
-    valor = m.group(2).replace(".", "").replace(",", ".")
+def parse_brl(value):
     try:
-        return float(valor)
+        return float(value.replace('.', '').replace(',', '.'))
+    except:
+        return 0
+
+def parse_usd(value):
+    try:
+        return float(value.replace(',', ''))
+    except:
+        return 0
+
+def parse_percent(value):
+    try:
+        return float(value.replace(',', '.').replace('%', ''))
     except:
         return None
 
-def extrair_rent(linha):
-    m = re.search(r'(-?\d+[\.,]?\d*)%', linha)
-    if not m:
-        return None
-    return float(m.group(1).replace(",", "."))
+# =========================
+# CLASSIFICAÇÃO
+# =========================
+def classificar(nome, moeda):
+    nome = nome.upper()
 
-def extrair_nome(linha):
-    linha = re.sub(r'(R\$|\$)\s?[\d\.,]+', '', linha)
-    linha = re.sub(r'-?\d+[\.,]?\d*%', '', linha)
-    return " ".join(linha.split()[:3])
+    if moeda == "USD":
+        return "Internacional"
 
-def detectar_moeda(linha):
-    if "$" in linha:
-        return "USD"
-    return "BRL"
+    if re.match(r'^[A-Z]{4}\d{1,2}$', nome):
+        return "Renda Variável"
+
+    if "FII" in nome or "ETF" in nome or "FUNDO" in nome:
+        return "Renda Variável"
+
+    return "Renda Fixa"
 
 # =========================
-# FILTRO (CRÍTICO)
+# PARSER XP (CORRIGIDO)
 # =========================
-def linha_valida(linha):
-    lixo = ["DATA", "MÊS", "MES", "ANO", "TOTAL", "SALDO"]
-    linha_up = linha.upper()
+def parse_xp(text):
+    data = []
 
-    if any(x in linha_up for x in lixo):
-        return False
+    if "POSIÇÃO DETALHADA DOS ATIVOS" not in text:
+        return data
 
-    if not re.search(r"\d", linha):
-        return False
+    section = text.split("POSIÇÃO DETALHADA DOS ATIVOS")[1]
+    lines = section.split("\n")
 
-    if len(linha.split()) < 2:
-        return False
+    for line in lines:
+        match = re.search(r'(.+?)\sR\$\s([\d\.,]+)', line)
 
-    return True
+        if not match:
+            continue
+
+        nome = match.group(1).strip()
+        valor = parse_brl(match.group(2))
+        nome_upper = nome.upper()
+
+        # 🚫 FILTRO DE LIXO
+        if (
+            len(nome) < 4
+            or any(x in nome_upper for x in [
+                "TOTAL", "VALOR", "POSIÇÃO", "LISTADOS",
+                "RENDA FIXA", "RENDA VARIÁVEL", "PÓS",
+                "TESOURO", "APLICAÇÃO", "SALDO"
+            ])
+        ):
+            continue
+
+        data.append({
+            "ativo": nome,
+            "valor": valor,
+            "rentabilidade": None,
+            "moeda": "BRL",
+            "classe": classificar(nome, "BRL")
+        })
+
+    return data
 
 # =========================
-# PROCESSAMENTO
+# PARSER AVENUE
 # =========================
-def processar_pdf(file):
-    ativos = []
+def parse_avenue(text):
+    data = []
 
-    with pdfplumber.open(file) as pdf:
-        for page in pdf.pages:
-            texto = page.extract_text()
-            if not texto:
-                continue
+    pattern = re.findall(
+        r'([A-Z]{2,5})\s.*?\s([\d\.,]+)\s([\+\-]?\d+,\d+%)',
+        text
+    )
 
-            for linha in texto.split("\n"):
-                linha = limpar(linha)
+    for match in pattern:
+        data.append({
+            "ativo": match[0],
+            "valor": parse_usd(match[1]),
+            "rentabilidade": parse_percent(match[2]),
+            "moeda": "USD",
+            "classe": "Internacional"
+        })
 
-                if not linha_valida(linha):
-                    continue
+    return data
 
-                valor = extrair_valor(linha)
-                if not valor:
-                    continue
+# =========================
+# DETECTOR
+# =========================
+def detect_parser(text):
+    if "XP" in text or "XPerformance" in text:
+        return parse_xp(text)
+    return parse_avenue(text)
 
-                ativos.append({
-                    "ativo": extrair_nome(linha),
-                    "valor": valor,
-                    "moeda": detectar_moeda(linha),
-                    "rentabilidade": extrair_rent(linha)
-                })
+# =========================
+# CONSOLIDA ATIVOS
+# =========================
+def consolidar_ativos(lista):
+    mapa = {}
 
-    return ativos
+    for item in lista:
+        chave = item["ativo"]
+
+        if chave not in mapa:
+            mapa[chave] = {
+                **item,
+                "somaRent": (item["rentabilidade"] or 0) * item["valor"],
+                "valorTotal": item["valor"]
+            }
+        else:
+            mapa[chave]["valor"] += item["valor"]
+            mapa[chave]["somaRent"] += (item["rentabilidade"] or 0) * item["valor"]
+            mapa[chave]["valorTotal"] += item["valor"]
+
+    resultado = []
+
+    for item in mapa.values():
+        rent = None
+        if item["valorTotal"] > 0 and item["somaRent"] > 0:
+            rent = item["somaRent"] / item["valorTotal"]
+
+        resultado.append({
+            "ativo": item["ativo"],
+            "valor": item["valor"],
+            "moeda": item["moeda"],
+            "classe": item["classe"],
+            "rentabilidade": rent
+        })
+
+    return resultado
+
+# =========================
+# CONSOLIDA CLASSES
+# =========================
+def consolidar_classes(lista):
+    classes = {}
+
+    for item in lista:
+        c = item["classe"]
+        classes[c] = classes.get(c, 0) + item["valor"]
+
+    return [{"classe": k, "valor": v} for k, v in classes.items()]
 
 # =========================
 # ROTA
 # =========================
-@app.route("/upload", methods=["POST"])
+@app.route('/upload', methods=['POST'])
 def upload():
-    print("FILES:", request.files)
+    try:
+        files = request.files.getlist('files')
+        carteira = []
 
-    if "file" not in request.files:
-        return jsonify({"erro": "Arquivo não enviado"}), 400
+        for file in files:
+            with pdfplumber.open(file) as pdf:
+                text = ""
+                for page in pdf.pages:
+                    text += page.extract_text() or ""
 
-    file = request.files["file"]
+                carteira.extend(detect_parser(text))
 
-    print("Arquivo:", file.filename)
+        ativos = consolidar_ativos(carteira)
+        classes = consolidar_classes(ativos)
 
-    ativos = processar_pdf(file)
+        return jsonify({
+            "status": "ok",
+            "ativos": ativos,
+            "classes": classes
+        })
 
-    print("Ativos:", ativos)
+    except Exception as e:
+        return jsonify({
+            "status": "erro",
+            "mensagem": str(e)
+        }), 500
 
-    return jsonify({"ativos": ativos})
-
-@app.route("/")
+@app.route('/')
 def home():
-    return "API OK"
+    return "API rodando 🚀"
 
-# =========================
 if __name__ == "__main__":
-    app.run()
+    app.run(debug=True)
+```
+
