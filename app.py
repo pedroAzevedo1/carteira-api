@@ -4,175 +4,115 @@ import pdfplumber
 import re
 
 app = Flask(__name__)
-CORS(app)
+CORS(app, resources={r"/*": {"origins": "*"}})
 
 # =========================
 # UTIL
 # =========================
 
-def limpar_texto(texto):
-    if not texto:
-        return ""
-    texto = texto.replace("\xa0", " ")
-    texto = re.sub(r"\s+", " ", texto)
-    return texto.strip()
+def limpar(texto):
+    return re.sub(r"\s+", " ", texto.replace("\xa0", " ")).strip()
 
+def extrair_valor(linha):
+    m = re.search(r'(R\$|\$)\s?([\d\.,]+)', linha)
+    if not m:
+        return None
 
-def is_linha_valida(linha):
-    linha = linha.upper()
+    valor = m.group(2).replace(".", "").replace(",", ".")
+    try:
+        return float(valor)
+    except:
+        return None
 
-    # ignora lixo comum dos PDFs
-    lixo = [
-        "DATA", "MÊS", "MES", "ANO", "TOTAL", "SALDO",
-        "POSIÇÃO", "POSICAO", "EXTRATO", "RENTABILIDADE",
-        "VALORIZAÇÃO", "VALOR TOTAL"
-    ]
+def extrair_rent(linha):
+    m = re.search(r'(-?\d+[\.,]?\d*)%', linha)
+    if not m:
+        return None
+    return float(m.group(1).replace(",", "."))
 
-    if any(l in linha for l in lixo):
+def extrair_nome(linha):
+    linha = re.sub(r'(R\$|\$)\s?[\d\.,]+', '', linha)
+    linha = re.sub(r'-?\d+[\.,]?\d*%', '', linha)
+    return " ".join(linha.split()[:3])
+
+def detectar_moeda(linha):
+    if "$" in linha:
+        return "USD"
+    return "BRL"
+
+# =========================
+# FILTRO (CRÍTICO)
+# =========================
+def linha_valida(linha):
+    lixo = ["DATA", "MÊS", "MES", "ANO", "TOTAL", "SALDO"]
+    linha_up = linha.upper()
+
+    if any(x in linha_up for x in lixo):
         return False
 
-    # precisa ter número (valor)
     if not re.search(r"\d", linha):
         return False
 
-    # precisa ter pelo menos uma palavra (ativo)
     if len(linha.split()) < 2:
         return False
 
     return True
 
-
-def extrair_valor(linha):
-    # USD ou BRL
-    match = re.search(r'(\$|R\$)\s?([\d.,]+)', linha)
-    if match:
-        valor = match.group(2).replace(".", "").replace(",", ".")
-        try:
-            return float(valor)
-        except:
-            return 0.0
-    return 0.0
-
-
-def extrair_moeda(linha):
-    if "$" in linha:
-        return "USD"
-    if "R$" in linha:
-        return "BRL"
-    return "BRL"
-
-
-def extrair_rentabilidade(linha):
-    match = re.search(r'(-?\d+[.,]?\d*)%', linha)
-    if match:
-        val = match.group(1).replace(",", ".")
-        try:
-            return float(val)
-        except:
-            return 0.0
-    return 0.0
-
-
-def extrair_nome(linha):
-    # remove valores e %
-    linha = re.sub(r'(\$|R\$)\s?[\d.,]+', '', linha)
-    linha = re.sub(r'-?\d+[.,]?\d*%', '', linha)
-
-    partes = linha.split()
-
-    # pega primeiras palavras como nome
-    nome = " ".join(partes[:4])
-    return nome.strip()
-
-
-def classificar(nome):
-    nome = nome.upper()
-
-    if any(x in nome for x in ["TESOURO", "CDB", "LCI", "LCA", "RENDA FIXA"]):
-        return "Renda Fixa"
-
-    if any(x in nome for x in ["FII", "FUND", "ETF", "AÇÕES", "ACAO", "STOCK"]):
-        return "Renda Variável"
-
-    if any(x in nome for x in ["USD", "ETF", "TREASURY", "BOND"]):
-        return "Internacional"
-
-    return "Outros"
-
-
 # =========================
-# PROCESSAMENTO DO PDF
+# PROCESSAMENTO
 # =========================
-
 def processar_pdf(file):
     ativos = []
 
     with pdfplumber.open(file) as pdf:
         for page in pdf.pages:
             texto = page.extract_text()
-
             if not texto:
                 continue
 
-            linhas = texto.split("\n")
+            for linha in texto.split("\n"):
+                linha = limpar(linha)
 
-            for linha in linhas:
-                linha = limpar_texto(linha)
-
-                if not is_linha_valida(linha):
+                if not linha_valida(linha):
                     continue
 
                 valor = extrair_valor(linha)
-                if valor == 0:
+                if not valor:
                     continue
 
-                nome = extrair_nome(linha)
-                moeda = extrair_moeda(linha)
-                rent = extrair_rentabilidade(linha)
-                classe = classificar(nome)
-
                 ativos.append({
-                    "ativo": nome,
+                    "ativo": extrair_nome(linha),
                     "valor": valor,
-                    "moeda": moeda,
-                    "rentabilidade": rent,
-                    "classe": classe
+                    "moeda": detectar_moeda(linha),
+                    "rentabilidade": extrair_rent(linha)
                 })
 
     return ativos
 
-
 # =========================
-# ROTAS
+# ROTA
 # =========================
-
 @app.route("/upload", methods=["POST"])
 def upload():
+    print("FILES:", request.files)
+
     if "file" not in request.files:
         return jsonify({"erro": "Arquivo não enviado"}), 400
 
     file = request.files["file"]
 
-    try:
-        ativos = processar_pdf(file)
+    print("Arquivo:", file.filename)
 
-        if not ativos:
-            return jsonify({
-                "erro": "Nenhum ativo identificado. PDF pode estar em formato diferente."
-            }), 400
+    ativos = processar_pdf(file)
 
-        return jsonify({
-            "ativos": ativos
-        })
+    print("Ativos:", ativos)
 
-    except Exception as e:
-        return jsonify({
-            "erro": str(e)
-        }), 500
-
+    return jsonify({"ativos": ativos})
 
 @app.route("/")
 def home():
-    return "API Carteira OK 🚀"
+    return "API OK"
 
-
+# =========================
+if __name__ == "__main__":
+    app.run()
