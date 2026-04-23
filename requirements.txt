@@ -1,4 +1,4 @@
 flask
-pdfplumber
-gunicorn
 flask-cors
+pdfplumber
+pymupdf
