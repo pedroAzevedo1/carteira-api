@@ -6,30 +6,14 @@ import re
 app = Flask(__name__)
 CORS(app)
 
-# ======================
-# PARSERS UTIL
-# ======================
 def parse_brl(v):
-    try:
-        return float(v.replace('.', '').replace(',', '.'))
-    except:
-        return 0
-
-def parse_usd(v):
-    try:
-        return float(v.replace(',', ''))
-    except:
-        return 0
+    try: return float(v.replace('.', '').replace(',', '.'))
+    except: return 0
 
 def parse_percent(v):
-    try:
-        return float(v.replace(',', '.').replace('%', ''))
-    except:
-        return None
+    try: return float(v.replace(',', '.').replace('%',''))
+    except: return None
 
-# ======================
-# CLASSIFICAÇÃO
-# ======================
 def classificar(nome, moeda):
     nome = nome.upper()
 
@@ -44,9 +28,7 @@ def classificar(nome, moeda):
 
     return "Renda Fixa"
 
-# ======================
-# PARSER XP (OK)
-# ======================
+# ===== PARSER XP (CORRIGIDO DE VERDADE) =====
 def parse_xp(text):
     data = []
 
@@ -54,8 +36,9 @@ def parse_xp(text):
         return data
 
     section = text.split("POSIÇÃO DETALHADA DOS ATIVOS")[1]
+    lines = section.split("\n")
 
-    for line in section.split("\n"):
+    for line in lines:
         line = line.strip()
 
         nome_match = re.match(r'^([A-Za-z0-9\s\.\-]+?)\s+R\$', line)
@@ -73,8 +56,10 @@ def parse_xp(text):
 
         rent = parse_percent(rent_match.group(1)) if rent_match else None
 
-        if any(x in nome.upper() for x in [
-            "TOTAL","POSIÇÃO","ESTRATÉGIA","CAIXA","FUNDOS"
+        nome_upper = nome.upper()
+        if any(x in nome_upper for x in [
+            "TOTAL","POSIÇÃO","ESTRATÉGIA",
+            "PÓS FIXADO","FUNDOS LISTADOS","CAIXA"
         ]):
             continue
 
@@ -88,74 +73,54 @@ def parse_xp(text):
 
     return data
 
-# ======================
-# PARSER AVENUE (CORRIGIDO)
-# ======================
-def parse_avenue(text):
-    data = []
+# ===== CONSOLIDA =====
+def consolidar(lista):
+    mapa = {}
 
-    for line in text.split("\n"):
-        line = line.strip()
+    for i in lista:
+        chave = f"{i['ativo']}_{i['moeda']}"
 
-        ticker_match = re.match(r'^([A-Z]{2,5})\b', line)
-        valores = re.findall(r'[\d,]+\.\d{2}', line)
-        rent_match = re.search(r'([\+\-]?\d+,\d+)%', line)
+        if chave not in mapa:
+            mapa[chave] = {
+                **i,
+                "somaRent": i["rentabilidade"]*i["valor"] if i["rentabilidade"] is not None else 0,
+                "somaBase": i["valor"] if i["rentabilidade"] is not None else 0
+            }
+        else:
+            mapa[chave]["valor"] += i["valor"]
 
-        if not ticker_match or not valores:
-            continue
+            if i["rentabilidade"] is not None:
+                mapa[chave]["somaRent"] += i["rentabilidade"]*i["valor"]
+                mapa[chave]["somaBase"] += i["valor"]
 
-        ticker = ticker_match.group(1)
+    result = []
 
-        # pega o último número → valor total
-        valor = parse_usd(valores[-1])
+    for i in mapa.values():
+        rent = i["somaRent"]/i["somaBase"] if i["somaBase"]>0 else None
 
-        if valor <= 0:
-            continue
-
-        rent = parse_percent(rent_match.group(1)) if rent_match else None
-
-        data.append({
-            "ativo": ticker,
-            "valor": valor,
-            "moeda": "USD",
-            "classe": "Internacional",
+        result.append({
+            "ativo": i["ativo"],
+            "valor": i["valor"],
+            "moeda": i["moeda"],
+            "classe": i["classe"],
             "rentabilidade": rent
         })
 
-    return data
+    return result
 
-# ======================
-# DETECTOR
-# ======================
-def detect_parser(text):
-    t = text.upper()
-
-    if "POSIÇÃO DETALHADA DOS ATIVOS" in t:
-        return parse_xp(text)
-
-    return parse_avenue(text)
-
-# ======================
-# ROTA
-# ======================
-@app.route('/upload', methods=['POST'])
+@app.route("/upload", methods=["POST"])
 def upload():
-    try:
-        files = request.files.getlist('files')
-        carteira = []
+    files = request.files.getlist("files")
+    carteira = []
 
-        for f in files:
-            with pdfplumber.open(f) as pdf:
-                text = "".join([p.extract_text() or "" for p in pdf.pages])
-                carteira.extend(detect_parser(text))
+    for f in files:
+        with pdfplumber.open(f) as pdf:
+            text = "".join([p.extract_text() or "" for p in pdf.pages])
+            carteira.extend(parse_xp(text))
 
-        return jsonify({
-            "status": "ok",
-            "ativos": carteira
-        })
+    ativos = consolidar(carteira)
 
-    except Exception as e:
-        return jsonify({"erro": str(e)}), 500
+    return jsonify({"ativos": ativos})
 
 if __name__ == "__main__":
     app.run(debug=True)
