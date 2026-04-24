@@ -7,7 +7,7 @@ app = Flask(__name__)
 CORS(app)
 
 # ======================
-# UTIL
+# PARSERS UTIL
 # ======================
 def parse_brl(v):
     try:
@@ -45,7 +45,7 @@ def classificar(nome, moeda):
     return "Renda Fixa"
 
 # ======================
-# PARSER XP
+# PARSER XP (OK)
 # ======================
 def parse_xp(text):
     data = []
@@ -89,7 +89,7 @@ def parse_xp(text):
     return data
 
 # ======================
-# PARSER AVENUE (DEFINITIVO)
+# PARSER AVENUE (CORRIGIDO)
 # ======================
 def parse_avenue(text):
     data = []
@@ -97,35 +97,22 @@ def parse_avenue(text):
     for line in text.split("\n"):
         line = line.strip()
 
-        # ticker
         ticker_match = re.match(r'^([A-Z]{2,5})\b', line)
-        if not ticker_match:
+        valores = re.findall(r'[\d,]+\.\d{2}', line)
+        rent_match = re.search(r'([\+\-]?\d+,\d+)%', line)
+
+        if not ticker_match or not valores:
             continue
 
         ticker = ticker_match.group(1)
 
-        # rentabilidade
-        rent_match = re.search(r'([\+\-]?\d+,\d+)%', line)
-        rent = parse_percent(rent_match.group(1)) if rent_match else None
+        # pega o último número → valor total
+        valor = parse_usd(valores[-1])
 
-        valor = None
-
-        # 🔥 REGRA PRINCIPAL → número antes da %
-        if rent_match:
-            trecho = line[:rent_match.start()]
-            numeros = re.findall(r'\d{1,3}(?:,\d{3})*\.\d{2}', trecho)
-
-            if numeros:
-                valor = parse_usd(numeros[-1])
-
-        # 🔁 fallback (caso não tenha %)
-        if valor is None:
-            numeros = re.findall(r'\d{1,3}(?:,\d{3})*\.\d{2}', line)
-            if numeros:
-                valor = parse_usd(numeros[-1])
-
-        if not valor or valor <= 0:
+        if valor <= 0:
             continue
+
+        rent = parse_percent(rent_match.group(1)) if rent_match else None
 
         data.append({
             "ativo": ticker,
@@ -169,10 +156,6 @@ def upload():
 
     except Exception as e:
         return jsonify({"erro": str(e)}), 500
-
-@app.route('/')
-def home():
-    return "API OK 🚀"
 
 if __name__ == "__main__":
     app.run(debug=True)
