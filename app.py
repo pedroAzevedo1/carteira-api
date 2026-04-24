@@ -6,20 +6,14 @@ import re
 app = Flask(__name__)
 CORS(app)
 
-# ===== PARSERS =====
 def parse_brl(v):
     try: return float(v.replace('.', '').replace(',', '.'))
-    except: return 0
-
-def parse_usd(v):
-    try: return float(v.replace(',', ''))
     except: return 0
 
 def parse_percent(v):
     try: return float(v.replace(',', '.').replace('%',''))
     except: return None
 
-# ===== CLASSIFICAÇÃO =====
 def classificar(nome, moeda):
     nome = nome.upper()
 
@@ -34,7 +28,7 @@ def classificar(nome, moeda):
 
     return "Renda Fixa"
 
-# ===== XP =====
+# ===== PARSER XP (CORRIGIDO DE VERDADE) =====
 def parse_xp(text):
     data = []
 
@@ -42,90 +36,67 @@ def parse_xp(text):
         return data
 
     section = text.split("POSIÇÃO DETALHADA DOS ATIVOS")[1]
+    lines = section.split("\n")
 
-    for line in section.split("\n"):
-        ticker = re.search(r'\b[A-Z]{4}\d{1,2}\b', line)
-        valor = re.search(r'R\$\s([\d\.,]+)', line)
+    for line in lines:
+        line = line.strip()
 
-        if not ticker or not valor:
+        nome_match = re.match(r'^([A-Za-z0-9\s\.\-]+?)\s+R\$', line)
+        valor_match = re.search(r'R\$\s([\d\.,]+)', line)
+        rent_match = re.search(r'R\$\s[\d\.,]+.*?([\-\+]?\d+,\d+)%', line)
+
+        if not nome_match or not valor_match:
             continue
 
-        v = parse_brl(valor.group(1))
-        if v <= 0:
-            continue
+        nome = nome_match.group(1).strip()
+        valor = parse_brl(valor_match.group(1))
 
-        nome = ticker.group(0)
-
-        data.append({
-            "ativo": nome,
-            "valor": v,
-            "moeda": "BRL",
-            "classe": classificar(nome,"BRL"),
-            "rentabilidade": None
-        })
-
-    return data
-
-# ===== AVENUE =====
-def parse_avenue(text):
-    data = []
-
-    matches = re.findall(
-        r'\b([A-Z]{2,5})\b.*?([\d,]+\.\d{2})\s+([\+\-]?\d+,\d+%)',
-        text
-    )
-
-    for t, v, r in matches:
-        valor = parse_usd(v)
         if valor <= 0:
             continue
 
+        rent = parse_percent(rent_match.group(1)) if rent_match else None
+
+        nome_upper = nome.upper()
+        if any(x in nome_upper for x in [
+            "TOTAL","POSIÇÃO","ESTRATÉGIA",
+            "PÓS FIXADO","FUNDOS LISTADOS","CAIXA"
+        ]):
+            continue
+
         data.append({
-            "ativo": t,
+            "ativo": nome,
             "valor": valor,
-            "moeda": "USD",
-            "classe": "Internacional",
-            "rentabilidade": parse_percent(r)
+            "moeda": "BRL",
+            "classe": classificar(nome,"BRL"),
+            "rentabilidade": rent
         })
 
     return data
 
-# ===== DETECTOR =====
-def detect_parser(text):
-    t = text.upper()
-
-    if "POSIÇÃO DETALHADA DOS ATIVOS" in t:
-        return parse_xp(text)
-
-    if re.search(r'\b[A-Z]{2,5}\b.*\d+,\d+%', text):
-        return parse_avenue(text)
-
-    return []
-
 # ===== CONSOLIDA =====
-def consolidar_ativos(lista):
+def consolidar(lista):
     mapa = {}
 
-    for item in lista:
-        chave = f"{item['ativo']}_{item['moeda']}"
+    for i in lista:
+        chave = f"{i['ativo']}_{i['moeda']}"
 
         if chave not in mapa:
             mapa[chave] = {
-                **item,
-                "somaRent": item["rentabilidade"] * item["valor"] if item["rentabilidade"] is not None else 0,
-                "somaBase": item["valor"] if item["rentabilidade"] is not None else 0
+                **i,
+                "somaRent": i["rentabilidade"]*i["valor"] if i["rentabilidade"] is not None else 0,
+                "somaBase": i["valor"] if i["rentabilidade"] is not None else 0
             }
         else:
-            mapa[chave]["valor"] += item["valor"]
+            mapa[chave]["valor"] += i["valor"]
 
-            if item["rentabilidade"] is not None:
-                mapa[chave]["somaRent"] += item["rentabilidade"] * item["valor"]
-                mapa[chave]["somaBase"] += item["valor"]
+            if i["rentabilidade"] is not None:
+                mapa[chave]["somaRent"] += i["rentabilidade"]*i["valor"]
+                mapa[chave]["somaBase"] += i["valor"]
 
     result = []
 
     for i in mapa.values():
-        rent = i["somaRent"] / i["somaBase"] if i["somaBase"] > 0 else None
+        rent = i["somaRent"]/i["somaBase"] if i["somaBase"]>0 else None
 
         result.append({
             "ativo": i["ativo"],
@@ -137,32 +108,19 @@ def consolidar_ativos(lista):
 
     return result
 
-# ===== ROUTE =====
-@app.route('/upload', methods=['POST'])
+@app.route("/upload", methods=["POST"])
 def upload():
-    try:
-        files = request.files.getlist('files')
-        carteira = []
+    files = request.files.getlist("files")
+    carteira = []
 
-        for file in files:
-            with pdfplumber.open(file) as pdf:
-                text = "".join([p.extract_text() or "" for p in pdf.pages])
-                carteira.extend(detect_parser(text))
+    for f in files:
+        with pdfplumber.open(f) as pdf:
+            text = "".join([p.extract_text() or "" for p in pdf.pages])
+            carteira.extend(parse_xp(text))
 
-        ativos = consolidar_ativos(carteira)
+    ativos = consolidar(carteira)
 
-        return jsonify({
-            "status": "ok",
-            "ativos": ativos
-        })
-
-    except Exception as e:
-        return jsonify({"status":"erro","msg":str(e)}),500
-
-@app.route('/')
-def home():
-    return "API OK 🚀"
+    return jsonify({"ativos": ativos})
 
 if __name__ == "__main__":
     app.run(debug=True)
-
