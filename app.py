@@ -29,7 +29,7 @@ def normalize_spaces(text: str) -> str:
 
 def parse_number(value: str) -> float:
     """
-    Aceita:
+    Suporta:
     2.984,52
     2984,52
     2,984.52
@@ -37,8 +37,7 @@ def parse_number(value: str) -> float:
     try:
         value = value.replace("R$", "").replace("US$", "").strip()
 
-        if "," in value and "." in value:
-            # formato brasileiro
+        if "." in value and "," in value:
             value = value.replace(".", "").replace(",", ".")
         elif "," in value:
             value = value.replace(",", ".")
@@ -80,16 +79,27 @@ def build_asset(ativo, valor, moeda, rentabilidade=None):
     }
 
 # ======================================
-# XP PARSER (mantido simples)
+# XP PARSER (CORRIGIDO)
 # ======================================
 
 def parse_xp(text: str) -> List[Dict]:
 
     assets = []
 
-    lines = text.split("\n")
+    match = re.search(
+        r"POSIÇÃO DETALHADA DOS ATIVOS(.*?)(Relatório informativo|$)",
+        text,
+        re.S
+    )
 
-    for line in lines:
+    if not match:
+        return assets
+
+    section = match.group(1)
+
+    for line in section.split("\n"):
+
+        line = normalize_spaces(line)
 
         if "R$" not in line:
             continue
@@ -106,18 +116,23 @@ def parse_xp(text: str) -> List[Dict]:
         if valor <= 0:
             continue
 
+        # 🔥 pega percentuais (XP)
         percents = re.findall(r"([\-\+]?\d+,\d+)%", line)
 
         rent = None
-        if len(percents) >= 2:
-            rent = parse_percent(percents[1])
 
-        assets.append(build_asset(nome, valor, "BRL", rent))
+        # XP: normalmente primeiro percentual é rentabilidade mensal
+        if percents:
+            rent = parse_percent(percents[0])
+
+        assets.append(
+            build_asset(nome, valor, "BRL", rent)
+        )
 
     return assets
 
 # ======================================
-# 🔥 AVENUE PARSER CORRIGIDO
+# AVENUE PARSER (ROBUSTO)
 # ======================================
 
 def parse_avenue(text: str) -> List[Dict]:
@@ -131,14 +146,12 @@ def parse_avenue(text: str) -> List[Dict]:
 
         line = normalize_spaces(line)
 
-        # ignora linhas irrelevantes
-        if len(line) < 20:
+        if len(line) < 30:
             continue
 
-        if not any(x in line for x in ["ETF", "Stock", "Stocks", "ETF's"]):
+        if not any(x in line for x in ["ETF", "Stock", "Stocks", "ETF'S"]):
             continue
 
-        # pega ticker (palavra curta)
         ticker_match = re.search(r"\b([A-Z]{2,5})\b", line)
 
         if not ticker_match:
@@ -149,26 +162,36 @@ def parse_avenue(text: str) -> List[Dict]:
         if ticker in INVALID_TICKERS:
             continue
 
-        # pega valores tipo 1.234,56
         values = re.findall(r"\d{1,3}(?:\.\d{3})*,\d{2}", line)
 
         if not values:
             continue
 
-        # último número da linha = volume
-        value_str = values[-1]
-
-        valor = parse_number(value_str)
+        valor = parse_number(values[-1])
 
         if valor <= 0:
             continue
 
-        assets.append(build_asset(ticker, valor, "USD"))
+        # 🔥 VAR (%) como proxy de rentabilidade
+        percents = re.findall(r"([\+\-]?\d+,\d+)%", line)
+
+        rent = None
+        if percents:
+            rent = parse_percent(percents[0])
+
+        assets.append(
+            build_asset(
+                ticker,
+                valor,
+                "USD",
+                rent
+            )
+        )
 
     return assets
 
 # ======================================
-# BTG PARSER (mantido)
+# BTG PARSER
 # ======================================
 
 def parse_btg(text: str) -> List[Dict]:
@@ -186,17 +209,17 @@ def parse_btg(text: str) -> List[Dict]:
     return assets
 
 # ======================================
-# DETECTOR
+# DETECTOR (CORRIGIDO)
 # ======================================
 
 def detect_parser(text: str):
 
     t = text.upper()
 
-    if "POSIÇÃO DETALHADA" in t:
+    if "POSIÇÃO DETALHADA DOS ATIVOS" in t:
         return parse_xp
 
-    if "AVENUE" in t or "US$" in t or "ETF'S" in t:
+    if "AVENUE SECURITIES" in t or "VALORES EM US$" in t:
         return parse_avenue
 
     if "RELATÓRIO DE PERFORMANCE" in t:
@@ -205,23 +228,23 @@ def detect_parser(text: str):
     return None
 
 # ======================================
-# EXTRAÇÃO
+# EXTRAÇÃO PDF
 # ======================================
 
 def extract_pdf_text(file):
 
-    full = ""
+    full_text = ""
 
     with pdfplumber.open(file) as pdf:
         for page in pdf.pages:
             txt = page.extract_text()
             if txt:
-                full += txt + "\n"
+                full_text += txt + "\n"
 
-    return full
+    return full_text
 
 # ======================================
-# ROTA
+# ROUTE
 # ======================================
 
 @app.route("/upload", methods=["POST"])
@@ -252,6 +275,9 @@ def upload():
         "ativos": all_assets
     })
 
+# ======================================
+# START
+# ======================================
 
 if __name__ == "__main__":
     app.run(debug=True)
