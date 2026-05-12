@@ -19,6 +19,14 @@ INVALID_TICKERS = {
     "AS","DA","DO","DE"
 }
 
+XP_IGNORE = [
+    "PÓS FIXADO",
+    "FUNDOS LISTADOS",
+    "CAIXA",
+    "ESTRATÉGIA",
+    "SALDO BRUTO"
+]
+
 # ======================================
 # HELPERS
 # ======================================
@@ -28,12 +36,6 @@ def normalize_spaces(text: str) -> str:
 
 
 def parse_number(value: str) -> float:
-    """
-    Suporta:
-    2.984,52
-    2984,52
-    2,984.52
-    """
     try:
         value = value.replace("R$", "").replace("US$", "").strip()
 
@@ -100,8 +102,12 @@ def parse_xp(text: str) -> List[Dict]:
     for line in section.split("\n"):
 
         line = normalize_spaces(line)
+        upper = line.upper()
 
         if "R$" not in line:
+            continue
+
+        if any(term in upper for term in XP_IGNORE):
             continue
 
         name_match = re.match(r"^(.*?)\s+R\$", line)
@@ -116,23 +122,18 @@ def parse_xp(text: str) -> List[Dict]:
         if valor <= 0:
             continue
 
-        # 🔥 pega percentuais (XP)
         percents = re.findall(r"([\-\+]?\d+,\d+)%", line)
 
         rent = None
-
-        # XP: normalmente primeiro percentual é rentabilidade mensal
         if percents:
             rent = parse_percent(percents[0])
 
-        assets.append(
-            build_asset(nome, valor, "BRL", rent)
-        )
+        assets.append(build_asset(nome, valor, "BRL", rent))
 
     return assets
 
 # ======================================
-# AVENUE PARSER (ROBUSTO)
+# AVENUE PARSER (AJUSTADO)
 # ======================================
 
 def parse_avenue(text: str) -> List[Dict]:
@@ -172,44 +173,19 @@ def parse_avenue(text: str) -> List[Dict]:
         if valor <= 0:
             continue
 
-        # 🔥 VAR (%) como proxy de rentabilidade
+        # VAR%
         percents = re.findall(r"([\+\-]?\d+,\d+)%", line)
 
         rent = None
         if percents:
             rent = parse_percent(percents[0])
 
-        assets.append(
-            build_asset(
-                ticker,
-                valor,
-                "USD",
-                rent
-            )
-        )
+        assets.append(build_asset(ticker, valor, "USD", rent))
 
     return assets
 
 # ======================================
-# BTG PARSER
-# ======================================
-
-def parse_btg(text: str) -> List[Dict]:
-
-    assets = []
-
-    matches = re.findall(r"([A-Z]{4,6}\d{0,2})\s+([\d\.]+,\d{2})", text)
-
-    for ticker, val in matches:
-        valor = parse_number(val)
-
-        if valor > 0:
-            assets.append(build_asset(ticker, valor, "BRL"))
-
-    return assets
-
-# ======================================
-# DETECTOR (CORRIGIDO)
+# DETECTOR
 # ======================================
 
 def detect_parser(text: str):
@@ -219,16 +195,13 @@ def detect_parser(text: str):
     if "POSIÇÃO DETALHADA DOS ATIVOS" in t:
         return parse_xp
 
-    if "AVENUE SECURITIES" in t or "VALORES EM US$" in t:
+    if "AVENUE" in t and "US$" in t:
         return parse_avenue
-
-    if "RELATÓRIO DE PERFORMANCE" in t:
-        return parse_btg
 
     return None
 
 # ======================================
-# EXTRAÇÃO PDF
+# EXTRAÇÃO
 # ======================================
 
 def extract_pdf_text(file):
@@ -271,9 +244,7 @@ def upload():
         except Exception as e:
             print("Erro:", e)
 
-    return jsonify({
-        "ativos": all_assets
-    })
+    return jsonify({"ativos": all_assets})
 
 # ======================================
 # START
