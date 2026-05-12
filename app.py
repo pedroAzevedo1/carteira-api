@@ -9,7 +9,7 @@ app = Flask(__name__)
 CORS(app)
 
 # ======================================================
-# PARSERS AUXILIARES
+# AUXILIARES
 # ======================================================
 
 def parse_brl(valor):
@@ -17,13 +17,11 @@ def parse_brl(valor):
     try:
 
         return float(
-
             valor
             .replace("R$", "")
             .replace(".", "")
             .replace(",", ".")
             .strip()
-
         )
 
     except:
@@ -36,12 +34,10 @@ def parse_usd(valor):
     try:
 
         return float(
-
             valor
             .replace("US$", "")
             .replace(",", "")
             .strip()
-
         )
 
     except:
@@ -54,12 +50,10 @@ def parse_percent(valor):
     try:
 
         return float(
-
             valor
             .replace("%", "")
             .replace(",", ".")
             .strip()
-
         )
 
     except:
@@ -120,7 +114,10 @@ def parse_xp(text):
             line
         ).strip()
 
-        # ignora cabeçalhos e linhas inúteis
+        # ==========================================
+        # IGNORA CABEÇALHOS
+        # ==========================================
+
         if any(x in line.upper() for x in [
 
             "TOTAL",
@@ -144,9 +141,7 @@ def parse_xp(text):
         # ==========================================
 
         nome_match = re.match(
-
             r'^(.*?)\s+R\$',
-
             line
         )
 
@@ -160,9 +155,7 @@ def parse_xp(text):
         # ==========================================
 
         valor_match = re.search(
-
             r'R\$\s*([\d\.\,]+)',
-
             line
         )
 
@@ -177,24 +170,19 @@ def parse_xp(text):
             continue
 
         # ==========================================
-        # PERCENTUAIS
+        # RENTABILIDADE
         # ==========================================
 
         percentuais = re.findall(
-
             r'([\-\+]?\d+,\d+)%',
-
             line
         )
 
         rent = None
 
-        # Estrutura XP:
-        #
+        # XP:
         # 0 -> peso
         # 1 -> rentabilidade mês
-        # 2 -> %CDI
-        # 3 -> rentabilidade ano
 
         if len(percentuais) >= 2:
 
@@ -227,40 +215,74 @@ def parse_avenue(text):
 
     data = []
 
-    # ==================================================
-    # NORMALIZA TEXTO
-    # ==================================================
+    lines = text.split("\n")
 
-    text = re.sub(
-        r'\s+',
-        ' ',
-        text
-    )
+    for line in lines:
 
-    # ==================================================
-    # PROCURA:
-    #
-    # TFLO ... US$ 5,895.00
-    # STIP ... US$ 2,100.00
-    # AMT ... US$ 850.00
-    # ==================================================
+        line = re.sub(
+            r'\s+',
+            ' ',
+            line
+        ).strip()
 
-    matches = re.findall(
+        line_upper = line.upper()
 
-        r'\b([A-Z]{1,5})\b.*?US\$\s*([\d,]+\.\d{2})',
-
-        text
-    )
-
-    for ticker, valor_str in matches:
-
-        ticker = ticker.strip()
-
-        valor = parse_usd(valor_str)
-
-        # ==============================================
+        # ==========================================
         # IGNORA LIXO
-        # ==============================================
+        # ==========================================
+
+        if any(x in line_upper for x in [
+
+            "SALDO",
+            "APORTES",
+            "JUROS",
+            "VARIACAO",
+            "VARIAÇÃO",
+            "TOTAL",
+            "ACCOUNT",
+            "CASH",
+            "DIVIDEND",
+            "WITHDRAW",
+            "DEPOSIT",
+            "RESUMO",
+            "EXTRATO",
+            "STATEMENT",
+            "DIAGNÓSTICO",
+            "CARTEIRA"
+
+        ]):
+            continue
+
+        # ==========================================
+        # EXEMPLOS:
+        #
+        # TFLO iShares Treasury Floating Rate Bond ETF US$ 5,895.00
+        # STIP iShares 0-5 Year TIPS Bond ETF US$ 2,100.00
+        # AMT American Tower Corp US$ 850.00
+        # ==========================================
+
+        match = re.match(
+
+            r'^([A-Z]{1,5})\s+.*?US\$\s*([\d,]+\.\d{2})',
+
+            line
+        )
+
+        if not match:
+            continue
+
+        ticker = match.group(1).strip()
+
+        valor = parse_usd(
+            match.group(2)
+        )
+
+        # ==========================================
+        # VALIDAÇÕES
+        # ==========================================
+
+        if valor <= 0:
+            continue
 
         if ticker in [
 
@@ -268,16 +290,17 @@ def parse_avenue(text):
             "USD",
             "NYSE",
             "NASDAQ",
-            "CASH",
-            "TOTAL",
-            "SALDO",
-            "APORTES",
-            "JUROS"
+            "ETF",
+            "INC",
+            "LLC",
+            "CORP",
+            "PLC",
+            "ADR"
 
         ]:
             continue
 
-        if valor <= 0:
+        if len(ticker) > 5:
             continue
 
         data.append({
@@ -290,17 +313,15 @@ def parse_avenue(text):
 
         })
 
-    # ==================================================
+    # ==========================================
     # REMOVE DUPLICADOS
-    # ==================================================
+    # ==========================================
 
     unicos = {}
 
     for item in data:
 
-        chave = item["ativo"]
-
-        unicos[chave] = item
+        unicos[item["ativo"]] = item
 
     return list(unicos.values())
 
@@ -450,24 +471,18 @@ def consolidar(lista):
     return resultado
 
 # ======================================================
-# DETECTA O TIPO DE RELATÓRIO
+# DETECTOR
 # ======================================================
 
 def detectar_parser(text):
 
     text_upper = text.upper()
 
-    # ==========================================
     # XP
-    # ==========================================
-
     if "POSIÇÃO DETALHADA DOS ATIVOS" in text_upper:
         return parse_xp
 
-    # ==========================================
     # AVENUE
-    # ==========================================
-
     if any(x in text_upper for x in [
 
         "AVENUE",
@@ -479,10 +494,7 @@ def detectar_parser(text):
     ]):
         return parse_avenue
 
-    # ==========================================
     # BTG
-    # ==========================================
-
     if "RELATÓRIO DE PERFORMANCE" in text_upper:
         return parse_btg
 
@@ -520,7 +532,6 @@ def upload():
 
                     texto += extracted + "\n"
 
-            # DEBUG
             print("\n================ PDF =================\n")
             print(texto[:5000])
 
@@ -543,8 +554,7 @@ def upload():
 
     return jsonify({
 
-        "ativos":
-            ativos_consolidados
+        "ativos": ativos_consolidados
 
     })
 
@@ -552,9 +562,6 @@ def upload():
 # START
 # ======================================================
 
-if __name__ == "__main__":
-
-    app.run(debug=True)
 if __name__ == "__main__":
 
     app.run(debug=True)
