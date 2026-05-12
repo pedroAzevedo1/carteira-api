@@ -17,14 +17,17 @@ def parse_brl(valor):
     try:
 
         return float(
+
             valor
             .replace("R$", "")
             .replace(".", "")
             .replace(",", ".")
             .strip()
+
         )
 
     except:
+
         return 0
 
 
@@ -33,13 +36,16 @@ def parse_usd(valor):
     try:
 
         return float(
+
             valor
             .replace("US$", "")
             .replace(",", "")
             .strip()
+
         )
 
     except:
+
         return 0
 
 
@@ -48,13 +54,16 @@ def parse_percent(valor):
     try:
 
         return float(
+
             valor
             .replace("%", "")
             .replace(",", ".")
             .strip()
+
         )
 
     except:
+
         return None
 
 # ======================================================
@@ -88,8 +97,11 @@ def parse_xp(text):
     data = []
 
     match = re.search(
+
         r'POSIÇÃO DETALHADA DOS ATIVOS(.*?)(Relatório informativo|$)',
+
         text,
+
         re.S
     )
 
@@ -102,8 +114,13 @@ def parse_xp(text):
 
     for line in lines:
 
-        line = re.sub(r'\s+', ' ', line).strip()
+        line = re.sub(
+            r'\s+',
+            ' ',
+            line
+        ).strip()
 
+        # ignora cabeçalhos e linhas inúteis
         if any(x in line.upper() for x in [
 
             "TOTAL",
@@ -122,8 +139,14 @@ def parse_xp(text):
         ]):
             continue
 
+        # ==========================================
+        # NOME
+        # ==========================================
+
         nome_match = re.match(
+
             r'^(.*?)\s+R\$',
+
             line
         )
 
@@ -132,35 +155,64 @@ def parse_xp(text):
 
         nome = nome_match.group(1).strip()
 
+        # ==========================================
+        # VALOR
+        # ==========================================
+
         valor_match = re.search(
+
             r'R\$\s*([\d\.\,]+)',
+
             line
         )
 
         if not valor_match:
             continue
 
-        valor = parse_brl(valor_match.group(1))
+        valor = parse_brl(
+            valor_match.group(1)
+        )
 
         if valor <= 0:
             continue
 
+        # ==========================================
+        # PERCENTUAIS
+        # ==========================================
+
         percentuais = re.findall(
+
             r'([\-\+]?\d+,\d+)%',
+
             line
         )
 
         rent = None
 
+        # Estrutura XP:
+        #
+        # 0 -> peso
+        # 1 -> rentabilidade mês
+        # 2 -> %CDI
+        # 3 -> rentabilidade ano
+
         if len(percentuais) >= 2:
-            rent = parse_percent(percentuais[1])
+
+            rent = parse_percent(
+                percentuais[1]
+            )
 
         data.append({
 
             "ativo": nome,
             "valor": valor,
             "moeda": "BRL",
-            "classe": classificar(nome, "BRL"),
+
+            "classe": classificar(
+                nome,
+                "BRL"
+            ),
+
             "rentabilidade": rent
 
         })
@@ -168,51 +220,95 @@ def parse_xp(text):
     return data
 
 # ======================================================
-# AVENUE
+# AVENUE (CORRIGIDO)
 # ======================================================
 
 def parse_avenue(text):
 
     data = []
 
-    # procura seção de posição consolidada
-    match = re.search(
-
-        r'Posição Consolidada(.*?)Diagnóstico da carteira',
-
-        text,
-
-        re.S
-    )
-
-    if not match:
-        return data
-
-    # pega ativos internacionais
     lines = text.split("\n")
 
     for line in lines:
 
-        line = re.sub(r'\s+', ' ', line).strip()
+        # limpa espaços duplicados
+        line = re.sub(
+            r'\s+',
+            ' ',
+            line
+        ).strip()
 
-        # exemplo:
+        line_upper = line.upper()
+
+        # ==================================================
+        # IGNORA LINHAS INVÁLIDAS
+        # ==================================================
+
+        if any(x in line_upper for x in [
+
+            "SALDO",
+            "APORTES",
+            "JUROS",
+            "VARIACAO",
+            "VARIAÇÃO",
+            "TOTAL",
+            "ACCOUNT",
+            "CASH",
+            "DIVIDEND",
+            "WITHDRAW",
+            "DEPOSIT",
+            "RESUMO",
+            "EXTRATO",
+            "STATEMENT"
+
+        ]):
+            continue
+
+        # ==================================================
+        # EXEMPLOS VÁLIDOS:
+        #
         # TFLO iShares Treasury Floating Rate Bond ETF US$ 5,895.00
+        # STIP iShares 0-5 Year TIPS Bond ETF US$ 2,100.00
+        # AMT American Tower Corp US$ 850.00
+        # ==================================================
 
-        ativo_match = re.match(
-            r'^([A-Z]{1,10})\s+.*?US\$\s*([\d,]+\.\d+)',
+        match = re.search(
+
+            r'^([A-Z]{1,5})\s+.+?US\$\s*([\d,]+\.\d{2})',
+
             line
         )
 
-        if not ativo_match:
+        if not match:
             continue
 
-        ticker = ativo_match.group(1)
+        ticker = match.group(1).strip()
 
         valor = parse_usd(
-            ativo_match.group(2)
+            match.group(2)
         )
 
+        # ==================================================
+        # VALIDAÇÕES
+        # ==================================================
+
         if valor <= 0:
+            continue
+
+        # evita lixo
+        if ticker in [
+
+            "SALDO",
+            "TOTAL",
+            "APORTES",
+            "JUROS",
+            "VARIACAO"
+
+        ]:
+            continue
+
+        # ticker muito grande normalmente é erro
+        if len(ticker) > 5:
             continue
 
         data.append({
@@ -236,60 +332,12 @@ def parse_btg(text):
     data = []
 
     # ==================================================
-    # RENDA FIXA
-    # ==================================================
-
-    rf_section = re.search(
-
-        r'Em Renda Fixa(.*?)(Em Previdência)',
-
-        text,
-
-        re.S
-    )
-
-    if rf_section:
-
-        lines = rf_section.group(1).split("\n")
-
-        for line in lines:
-
-            line = re.sub(r'\s+', ' ', line).strip()
-
-            ativo_match = re.match(
-                r'^(.+?)\s+([\d\.]+,\d{2})',
-                line
-            )
-
-            if not ativo_match:
-                continue
-
-            nome = ativo_match.group(1).strip()
-
-            valor = parse_brl(
-                ativo_match.group(2)
-            )
-
-            if valor <= 0:
-                continue
-
-            data.append({
-
-                "ativo": nome,
-                "valor": valor,
-                "moeda": "BRL",
-                "classe": "Renda Fixa",
-                "rentabilidade": None
-
-            })
-
-    # ==================================================
     # RENDA VARIÁVEL
     # ==================================================
 
     rv_matches = re.findall(
 
-        r'([A-Z]{4,6}\d{0,2})\s+\d+,\d+\s+R\$\s*([\d\.]+,\d{2})',
+        r'([A-Z]{4,6}\d{0,2})\s+([\d\.]+,\d{2})',
 
         text
     )
@@ -317,7 +365,7 @@ def parse_btg(text):
 
     fundo_matches = re.findall(
 
-        r'(KAPITALO.*?|BTG.*?FIRF.*?)\s+\d+,\d+\s+.*?R\$\s*([\d\.]+,\d{2})',
+        r'(KAPITALO.*?|BTG.*?FIRF.*?)\s+([\d\.]+,\d{2})',
 
         text
     )
@@ -351,7 +399,11 @@ def consolidar(lista):
 
     for item in lista:
 
-        chave = f"{item['ativo']}_{item['moeda']}"
+        chave = (
+            item["ativo"]
+            + "_"
+            + item["moeda"]
+        )
 
         if chave not in mapa:
 
@@ -382,8 +434,10 @@ def consolidar(lista):
             if item["rentabilidade"] is not None:
 
                 mapa[chave]["somaRent"] += (
+
                     item["rentabilidade"]
                     * item["valor"]
+
                 )
 
                 mapa[chave]["somaBase"] += (
@@ -415,7 +469,7 @@ def consolidar(lista):
     return resultado
 
 # ======================================================
-# DETECTA RELATÓRIO
+# DETECTA O TIPO DE RELATÓRIO
 # ======================================================
 
 def detectar_parser(text):
@@ -468,7 +522,8 @@ def upload():
 
     return jsonify({
 
-        "ativos": ativos_consolidados
+        "ativos":
+            ativos_consolidados
 
     })
 
