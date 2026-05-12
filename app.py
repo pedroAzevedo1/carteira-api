@@ -208,7 +208,7 @@ def parse_xp(text):
     return data
 
 # ======================================================
-# AVENUE (VERSÃO DEFINITIVA)
+# AVENUE
 # ======================================================
 
 def parse_avenue(text):
@@ -216,33 +216,20 @@ def parse_avenue(text):
     data = []
 
     # ==================================================
-    # NORMALIZA TEXTO
+    # NORMALIZA
     # ==================================================
-
-    text = text.upper()
 
     text = re.sub(
         r'\s+',
         ' ',
-        text
+        text.upper()
     )
 
     # ==================================================
-    # PROCURA PADRÃO:
-    #
-    # TFLO .... US$ 5,895.00
-    # STIP .... US$ 2,100.00
-    # AMT .... US$ 850.00
+    # PALAVRAS PROIBIDAS
     # ==================================================
 
-    matches = re.findall(
-
-        r'\b([A-Z]{1,5})\b\s+.*?US\$\s*([\d,]+\.\d{2})',
-
-        text
-    )
-
-    tickers_invalidos = {
+    invalidos = {
 
         "US",
         "USD",
@@ -258,9 +245,32 @@ def parse_avenue(text):
         "TOTAL",
         "SALDO",
         "JUROS",
-        "APORTES"
+        "APORTES",
+        "DADOS",
+        "POR",
+        "DAS",
+        "DOS",
+        "E",
+        "OS",
+        "AS",
+        "DA",
+        "DO",
+        "DE"
 
     }
+
+    # ==================================================
+    # PROCURA:
+    #
+    # TFLO iShares Treasury Floating Rate Bond ETF US$ 5,895.00
+    # ==================================================
+
+    matches = re.findall(
+
+        r'(?<![A-Z])([A-Z]{1,5})(?![A-Z])\s+[^$]{0,120}?US\$\s*([\d,]+\.\d{2})',
+
+        text
+    )
 
     encontrados = {}
 
@@ -268,10 +278,12 @@ def parse_avenue(text):
 
         ticker = ticker.strip()
 
-        if ticker in tickers_invalidos:
+        # ignora lixo
+        if ticker in invalidos:
             continue
 
-        if len(ticker) > 5:
+        # ticker precisa ter letras
+        if not re.search(r'[A-Z]', ticker):
             continue
 
         valor = parse_usd(valor_str)
@@ -279,7 +291,11 @@ def parse_avenue(text):
         if valor <= 0:
             continue
 
-        # mantém apenas o maior valor encontrado
+        # evita ruído
+        if valor < 1:
+            continue
+
+        # mantém maior valor encontrado
         if ticker not in encontrados:
 
             encontrados[ticker] = valor
@@ -290,6 +306,10 @@ def parse_avenue(text):
                 encontrados[ticker],
                 valor
             )
+
+    # ==================================================
+    # RESULTADO
+    # ==================================================
 
     for ticker, valor in encontrados.items():
 
