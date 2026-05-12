@@ -17,6 +17,7 @@ CORS(app)
 # ======================================================
 
 INVALID_TICKERS = {
+
     "US",
     "USD",
     "ETF",
@@ -42,9 +43,11 @@ INVALID_TICKERS = {
     "DA",
     "DO",
     "DE"
+
 }
 
 XP_IGNORE_TERMS = {
+
     "TOTAL",
     "POSIÇÃO",
     "ESTRATÉGIA",
@@ -57,20 +60,26 @@ XP_IGNORE_TERMS = {
     "PÓS FIXADO",
     "FUNDOS LISTADOS",
     "CAIXA"
+
 }
 
 # ======================================================
 # HELPERS
 # ======================================================
 
-
 def normalize_spaces(text: str) -> str:
-    return re.sub(r"\s+", " ", text).strip()
 
+    return re.sub(
+        r'\s+',
+        ' ',
+        text
+    ).strip()
 
 
 def parse_brl(value: str) -> float:
+
     try:
+
         cleaned = (
             value
             .replace("R$", "")
@@ -81,13 +90,15 @@ def parse_brl(value: str) -> float:
 
         return float(cleaned)
 
-    except Exception:
+    except:
+
         return 0.0
 
 
-
 def parse_usd(value: str) -> float:
+
     try:
+
         cleaned = (
             value
             .replace("US$", "")
@@ -97,13 +108,15 @@ def parse_usd(value: str) -> float:
 
         return float(cleaned)
 
-    except Exception:
+    except:
+
         return 0.0
 
 
-
 def parse_percent(value: str) -> Optional[float]:
+
     try:
+
         cleaned = (
             value
             .replace("%", "")
@@ -113,18 +126,19 @@ def parse_percent(value: str) -> Optional[float]:
 
         return float(cleaned)
 
-    except Exception:
+    except:
+
         return None
 
 
-
 def classify_asset(name: str, currency: str) -> str:
+
     upper_name = name.upper()
 
     if currency == "USD":
         return "Internacional"
 
-    if re.match(r"^[A-Z]{4}\d{1,2}$", upper_name):
+    if re.match(r'^[A-Z]{4}\d{1,2}$', upper_name):
         return "Renda Variável"
 
     if "FII" in upper_name:
@@ -136,7 +150,6 @@ def classify_asset(name: str, currency: str) -> str:
     return "Renda Fixa"
 
 
-
 def build_asset(
     ativo: str,
     valor: float,
@@ -146,25 +159,29 @@ def build_asset(
 ) -> Dict:
 
     return {
+
         "ativo": ativo,
         "valor": valor,
         "moeda": moeda,
         "classe": classe or classify_asset(ativo, moeda),
         "rentabilidade": rentabilidade
+
     }
 
 # ======================================================
 # XP PARSER
 # ======================================================
 
-
 def parse_xp(text: str) -> List[Dict]:
 
     assets = []
 
     match = re.search(
-        r"POSIÇÃO DETALHADA DOS ATIVOS(.*?)(Relatório informativo|$)",
+
+        r'POSIÇÃO DETALHADA DOS ATIVOS(.*?)(Relatório informativo|$)',
+
         text,
+
         re.S
     )
 
@@ -173,48 +190,86 @@ def parse_xp(text: str) -> List[Dict]:
 
     section = match.group(1)
 
-    for raw_line in section.split("\n"):
+    lines = section.split("\n")
+
+    for raw_line in lines:
 
         line = normalize_spaces(raw_line)
+
         upper_line = line.upper()
+
+        # ==========================================
+        # IGNORA CABEÇALHOS
+        # ==========================================
 
         if any(term in upper_line for term in XP_IGNORE_TERMS):
             continue
 
-        name_match = re.match(r"^(.*?)\s+R\$", line)
+        # ==========================================
+        # NOME
+        # ==========================================
+
+        name_match = re.match(
+            r'^(.*?)\s+R\$',
+            line
+        )
 
         if not name_match:
             continue
 
-        value_match = re.search(r"R\$\s*([\d\.,]+)", line)
+        asset_name = name_match.group(1).strip()
+
+        # ==========================================
+        # VALOR
+        # ==========================================
+
+        value_match = re.search(
+            r'R\$\s*([\d\.,]+)',
+            line
+        )
 
         if not value_match:
             continue
 
-        asset_name = name_match.group(1).strip()
-        asset_value = parse_brl(value_match.group(1))
+        asset_value = parse_brl(
+            value_match.group(1)
+        )
 
         if asset_value <= 0:
             continue
 
-        percentages = re.findall(r"([\-\+]?\d+,\d+)%", line)
+        # ==========================================
+        # RENTABILIDADE
+        # ==========================================
+
+        percentages = re.findall(
+            r'([\-\+]?\d+,\d+)%',
+            line
+        )
 
         profitability = None
 
         # XP:
-        # 0 = peso
-        # 1 = rentabilidade
+        # 0 -> peso
+        # 1 -> rentabilidade
 
         if len(percentages) >= 2:
-            profitability = parse_percent(percentages[1])
+
+            profitability = parse_percent(
+                percentages[1]
+            )
 
         assets.append(
+
             build_asset(
+
                 ativo=asset_name,
                 valor=asset_value,
                 moeda="BRL",
                 rentabilidade=profitability
+
             )
+
         )
 
     return assets
@@ -223,23 +278,41 @@ def parse_xp(text: str) -> List[Dict]:
 # AVENUE PARSER
 # ======================================================
 
-
 def parse_avenue(text: str) -> List[Dict]:
 
     assets = []
 
-    normalized_text = normalize_spaces(text.upper())
+    lines = text.split("\n")
 
-    matches = re.findall(
-        r"(?<![A-Z])([A-Z]{1,5})(?![A-Z])\s+[^$]{0,120}?US\$\s*([\d,]+\.\d{2})",
-        normalized_text
-    )
+    for raw_line in lines:
 
-    found_assets = {}
+        line = normalize_spaces(raw_line)
 
-    for ticker, value_string in matches:
+        if "US$" not in line:
+            continue
 
-        ticker = ticker.strip()
+        # ==========================================
+        # EXEMPLOS:
+        #
+        # TFLO iShares Treasury Floating Rate Bond ETF US$ 5,895.00
+        # SGOV iShares 0-3 Month Treasury Bond ETF US$ 1,250.00
+        # ==========================================
+
+        match = re.match(
+
+            r'^([A-Z]{1,5})\s+.*?US\$\s*([\d,]+\.\d{2})',
+
+            line
+        )
+
+        if not match:
+            continue
+
+        ticker = match.group(1).strip()
+
+        # ==========================================
+        # IGNORA LIXO
+        # ==========================================
 
         if ticker in INVALID_TICKERS:
             continue
@@ -247,43 +320,54 @@ def parse_avenue(text: str) -> List[Dict]:
         if len(ticker) > 5:
             continue
 
-        value = parse_usd(value_string)
+        value = parse_usd(
+            match.group(2)
+        )
 
         if value <= 0:
             continue
 
-        if value < 1:
-            continue
-
-        if ticker not in found_assets:
-            found_assets[ticker] = value
-        else:
-            found_assets[ticker] = max(found_assets[ticker], value)
-
-    for ticker, value in found_assets.items():
-
         assets.append(
+
             build_asset(
+
                 ativo=ticker,
                 valor=value,
                 moeda="USD",
                 classe="Internacional"
+
             )
+
         )
 
-    return assets
+    # ==========================================
+    # REMOVE DUPLICADOS
+    # ==========================================
+
+    unique_assets = {}
+
+    for asset in assets:
+
+        unique_assets[asset["ativo"]] = asset
+
+    return list(unique_assets.values())
 
 # ======================================================
 # BTG PARSER
 # ======================================================
 
-
 def parse_btg(text: str) -> List[Dict]:
 
     assets = []
 
+    # ==========================================
+    # RENDA VARIÁVEL
+    # ==========================================
+
     equity_matches = re.findall(
-        r"([A-Z]{4,6}\d{0,2})\s+([\d\.]+,\d{2})",
+
+        r'([A-Z]{4,6}\d{0,2})\s+([\d\.]+,\d{2})',
+
         text
     )
 
@@ -295,16 +379,26 @@ def parse_btg(text: str) -> List[Dict]:
             continue
 
         assets.append(
+
             build_asset(
+
                 ativo=ticker,
                 valor=value,
                 moeda="BRL",
                 classe="Renda Variável"
+
             )
+
         )
 
+    # ==========================================
+    # FUNDOS
+    # ==========================================
+
     fund_matches = re.findall(
-        r"(KAPITALO.*?|BTG.*?FIRF.*?)\s+([\d\.]+,\d{2})",
+
+        r'(KAPITALO.*?|BTG.*?FIRF.*?)\s+([\d\.]+,\d{2})',
+
         text
     )
 
@@ -316,12 +410,16 @@ def parse_btg(text: str) -> List[Dict]:
             continue
 
         assets.append(
+
             build_asset(
+
                 ativo=fund_name.strip(),
                 valor=value,
                 moeda="BRL",
                 classe="Fundo"
+
             )
+
         )
 
     return assets
@@ -329,7 +427,6 @@ def parse_btg(text: str) -> List[Dict]:
 # ======================================================
 # CONSOLIDAÇÃO
 # ======================================================
-
 
 def consolidate_assets(assets: List[Dict]) -> List[Dict]:
 
@@ -342,12 +439,14 @@ def consolidate_assets(assets: List[Dict]) -> List[Dict]:
         if key not in grouped_assets:
 
             grouped_assets[key] = {
+
                 "ativo": asset["ativo"],
                 "valor": 0,
                 "moeda": asset["moeda"],
                 "classe": asset["classe"],
                 "somaRent": 0,
                 "somaBase": 0
+
             }
 
         grouped_assets[key]["valor"] += asset["valor"]
@@ -357,10 +456,16 @@ def consolidate_assets(assets: List[Dict]) -> List[Dict]:
         if profitability is not None:
 
             grouped_assets[key]["somaRent"] += (
+
                 profitability * asset["valor"]
+
             )
 
-            grouped_assets[key]["somaBase"] += asset["valor"]
+            grouped_assets[key]["somaBase"] += (
+
+                asset["valor"]
+
+            )
 
     consolidated = []
 
@@ -371,15 +476,20 @@ def consolidate_assets(assets: List[Dict]) -> List[Dict]:
         if asset["somaBase"] > 0:
 
             profitability = (
-                asset["somaRent"] / asset["somaBase"]
+
+                asset["somaRent"]
+                / asset["somaBase"]
+
             )
 
         consolidated.append({
+
             "ativo": asset["ativo"],
             "valor": asset["valor"],
             "moeda": asset["moeda"],
             "classe": asset["classe"],
             "rentabilidade": profitability
+
         })
 
     return consolidated
@@ -388,32 +498,35 @@ def consolidate_assets(assets: List[Dict]) -> List[Dict]:
 # DETECTOR
 # ======================================================
 
-
 def detect_parser(text: str):
 
     upper_text = text.upper()
 
+    # XP
     if "POSIÇÃO DETALHADA DOS ATIVOS" in upper_text:
         return parse_xp
 
+    # AVENUE
     if any(keyword in upper_text for keyword in [
+
         "AVENUE",
         "NYSE",
         "NASDAQ",
         "US$",
         "DIAGNÓSTICO DA CARTEIRA"
+
     ]):
         return parse_avenue
 
+    # BTG
     if "RELATÓRIO DE PERFORMANCE" in upper_text:
         return parse_btg
 
     return None
 
 # ======================================================
-# PDF EXTRACTION
+# EXTRAÇÃO PDF
 # ======================================================
-
 
 def extract_pdf_text(file) -> str:
 
@@ -423,23 +536,20 @@ def extract_pdf_text(file) -> str:
 
         for page in pdf.pages:
 
-            extracted_text = page.extract_text(
-                x_tolerance=2,
-                y_tolerance=2,
-                layout=False
-            )
+            extracted = page.extract_text()
 
-            if extracted_text:
-                full_text += extracted_text + "\n"
+            if extracted:
+
+                full_text += extracted + "\n"
 
     return full_text
 
 # ======================================================
-# ROUTES
+# ROUTE
 # ======================================================
 
-
 @app.route("/upload", methods=["POST"])
+
 def upload():
 
     files = request.files.getlist("files")
@@ -458,7 +568,8 @@ def upload():
             parser = detect_parser(text)
 
             if not parser:
-                print("Nenhum parser detectado")
+
+                print("\nNenhum parser detectado")
                 continue
 
             extracted_assets = parser(text)
@@ -470,12 +581,14 @@ def upload():
 
         except Exception as error:
 
-            print(f"Erro ao processar arquivo: {error}")
+            print(f"\nErro ao processar arquivo: {error}")
 
     consolidated_assets = consolidate_assets(all_assets)
 
     return jsonify({
+
         "ativos": consolidated_assets
+
     })
 
 # ======================================================
@@ -483,5 +596,5 @@ def upload():
 # ======================================================
 
 if __name__ == "__main__":
-    app.run(debug=True)
 
+    app.run(debug=True)
