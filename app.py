@@ -227,84 +227,57 @@ def parse_avenue(text):
 
     data = []
 
-    lines = text.split("\n")
+    # ==================================================
+    # NORMALIZA TEXTO
+    # ==================================================
 
-    for line in lines:
+    text = re.sub(
+        r'\s+',
+        ' ',
+        text
+    )
 
-        line = re.sub(
-            r'\s+',
-            ' ',
-            line
-        ).strip()
+    # ==================================================
+    # PROCURA:
+    #
+    # TFLO ... US$ 5,895.00
+    # STIP ... US$ 2,100.00
+    # AMT ... US$ 850.00
+    # ==================================================
 
-        line_upper = line.upper()
+    matches = re.findall(
 
-        # ==========================================
+        r'\b([A-Z]{1,5})\b.*?US\$\s*([\d,]+\.\d{2})',
+
+        text
+    )
+
+    for ticker, valor_str in matches:
+
+        ticker = ticker.strip()
+
+        valor = parse_usd(valor_str)
+
+        # ==============================================
         # IGNORA LIXO
-        # ==========================================
+        # ==============================================
 
-        if any(x in line_upper for x in [
-
-            "SALDO",
-            "APORTES",
-            "JUROS",
-            "VARIACAO",
-            "VARIAÇÃO",
-            "TOTAL",
-            "ACCOUNT",
-            "CASH",
-            "DIVIDEND",
-            "WITHDRAW",
-            "DEPOSIT",
-            "RESUMO",
-            "EXTRATO",
-            "STATEMENT",
-            "DIAGNÓSTICO",
-            "CARTEIRA"
-
-        ]):
-            continue
-
-        # ==========================================
-        # EXEMPLOS:
-        #
-        # TFLO iShares Treasury Floating Rate Bond ETF US$ 5,895.00
-        # STIP iShares 0-5 Year TIPS Bond ETF US$ 2,100.00
-        # AMT American Tower Corp US$ 850.00
-        # ==========================================
-
-        match = re.search(
-
-            r'^([A-Z]{1,5})\s+.*?US\$\s*([\d,]+\.\d{2})',
-
-            line
-        )
-
-        if not match:
-            continue
-
-        ticker = match.group(1).strip()
-
-        valor = parse_usd(
-            match.group(2)
-        )
-
-        # ==========================================
-        # VALIDAÇÕES
-        # ==========================================
-
-        if valor <= 0:
-            continue
-
-        # ignora palavras falsas
         if ticker in [
 
-            "SALDO",
+            "US",
+            "USD",
+            "NYSE",
+            "NASDAQ",
+            "CASH",
             "TOTAL",
+            "SALDO",
             "APORTES",
             "JUROS"
 
         ]:
+            continue
+
+        if valor <= 0:
             continue
 
         data.append({
@@ -317,7 +290,19 @@ def parse_avenue(text):
 
         })
 
-    return data
+    # ==================================================
+    # REMOVE DUPLICADOS
+    # ==================================================
+
+    unicos = {}
+
+    for item in data:
+
+        chave = item["ativo"]
+
+        unicos[chave] = item
+
+    return list(unicos.values())
 
 # ======================================================
 # BTG / OPEN FINANCE
@@ -523,10 +508,21 @@ def upload():
 
             for page in pdf.pages:
 
-                texto += (
-                    page.extract_text()
-                    or ""
-                ) + "\n"
+                extracted = page.extract_text(
+
+                    x_tolerance=2,
+                    y_tolerance=2,
+                    layout=False
+
+                )
+
+                if extracted:
+
+                    texto += extracted + "\n"
+
+            # DEBUG
+            print("\n================ PDF =================\n")
+            print(texto[:5000])
 
             parser = detectar_parser(texto)
 
@@ -534,7 +530,14 @@ def upload():
 
                 ativos = parser(texto)
 
+                print("\nATIVOS ENCONTRADOS:")
+                print(ativos)
+
                 carteira.extend(ativos)
+
+            else:
+
+                print("\nNENHUM PARSER DETECTADO")
 
     ativos_consolidados = consolidar(carteira)
 
@@ -549,6 +552,9 @@ def upload():
 # START
 # ======================================================
 
+if __name__ == "__main__":
+
+    app.run(debug=True)
 if __name__ == "__main__":
 
     app.run(debug=True)
