@@ -208,100 +208,90 @@ def parse_xp(text):
     return data
 
 # ======================================================
-# AVENUE
+# AVENUE (VERSÃO DEFINITIVA)
 # ======================================================
 
 def parse_avenue(text):
 
     data = []
 
-    lines = text.split("\n")
+    # ==================================================
+    # NORMALIZA TEXTO
+    # ==================================================
 
-    for line in lines:
+    text = text.upper()
 
-        line = re.sub(
-            r'\s+',
-            ' ',
-            line
-        ).strip()
+    text = re.sub(
+        r'\s+',
+        ' ',
+        text
+    )
 
-        line_upper = line.upper()
+    # ==================================================
+    # PROCURA PADRÃO:
+    #
+    # TFLO .... US$ 5,895.00
+    # STIP .... US$ 2,100.00
+    # AMT .... US$ 850.00
+    # ==================================================
 
-        # ==========================================
-        # IGNORA LIXO
-        # ==========================================
+    matches = re.findall(
 
-        if any(x in line_upper for x in [
+        r'\b([A-Z]{1,5})\b\s+.*?US\$\s*([\d,]+\.\d{2})',
 
-            "SALDO",
-            "APORTES",
-            "JUROS",
-            "VARIACAO",
-            "VARIAÇÃO",
-            "TOTAL",
-            "ACCOUNT",
-            "CASH",
-            "DIVIDEND",
-            "WITHDRAW",
-            "DEPOSIT",
-            "RESUMO",
-            "EXTRATO",
-            "STATEMENT",
-            "DIAGNÓSTICO",
-            "CARTEIRA"
+        text
+    )
 
-        ]):
-            continue
+    tickers_invalidos = {
 
-        # ==========================================
-        # EXEMPLOS:
-        #
-        # TFLO iShares Treasury Floating Rate Bond ETF US$ 5,895.00
-        # STIP iShares 0-5 Year TIPS Bond ETF US$ 2,100.00
-        # AMT American Tower Corp US$ 850.00
-        # ==========================================
+        "US",
+        "USD",
+        "ETF",
+        "INC",
+        "LLC",
+        "CORP",
+        "PLC",
+        "ADR",
+        "NYSE",
+        "NASDAQ",
+        "CASH",
+        "TOTAL",
+        "SALDO",
+        "JUROS",
+        "APORTES"
 
-        match = re.match(
+    }
 
-            r'^([A-Z]{1,5})\s+.*?US\$\s*([\d,]+\.\d{2})',
+    encontrados = {}
 
-            line
-        )
+    for ticker, valor_str in matches:
 
-        if not match:
-            continue
+        ticker = ticker.strip()
 
-        ticker = match.group(1).strip()
-
-        valor = parse_usd(
-            match.group(2)
-        )
-
-        # ==========================================
-        # VALIDAÇÕES
-        # ==========================================
-
-        if valor <= 0:
-            continue
-
-        if ticker in [
-
-            "US",
-            "USD",
-            "NYSE",
-            "NASDAQ",
-            "ETF",
-            "INC",
-            "LLC",
-            "CORP",
-            "PLC",
-            "ADR"
-
-        ]:
+        if ticker in tickers_invalidos:
             continue
 
         if len(ticker) > 5:
             continue
+
+        valor = parse_usd(valor_str)
+
+        if valor <= 0:
+            continue
+
+        # mantém apenas o maior valor encontrado
+        if ticker not in encontrados:
+
+            encontrados[ticker] = valor
+
+        else:
+
+            encontrados[ticker] = max(
+                encontrados[ticker],
+                valor
+            )
+
+    for ticker, valor in encontrados.items():
 
         data.append({
 
@@ -313,17 +303,7 @@ def parse_avenue(text):
 
         })
 
-    # ==========================================
-    # REMOVE DUPLICADOS
-    # ==========================================
-
-    unicos = {}
-
-    for item in data:
-
-        unicos[item["ativo"]] = item
-
-    return list(unicos.values())
+    return data
 
 # ======================================================
 # BTG / OPEN FINANCE
