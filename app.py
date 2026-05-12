@@ -220,7 +220,7 @@ def parse_xp(text):
     return data
 
 # ======================================================
-# AVENUE (CORRIGIDO)
+# AVENUE
 # ======================================================
 
 def parse_avenue(text):
@@ -231,7 +231,6 @@ def parse_avenue(text):
 
     for line in lines:
 
-        # limpa espaços duplicados
         line = re.sub(
             r'\s+',
             ' ',
@@ -240,9 +239,9 @@ def parse_avenue(text):
 
         line_upper = line.upper()
 
-        # ==================================================
-        # IGNORA LINHAS INVÁLIDAS
-        # ==================================================
+        # ==========================================
+        # IGNORA LIXO
+        # ==========================================
 
         if any(x in line_upper for x in [
 
@@ -259,22 +258,24 @@ def parse_avenue(text):
             "DEPOSIT",
             "RESUMO",
             "EXTRATO",
-            "STATEMENT"
+            "STATEMENT",
+            "DIAGNÓSTICO",
+            "CARTEIRA"
 
         ]):
             continue
 
-        # ==================================================
-        # EXEMPLOS VÁLIDOS:
+        # ==========================================
+        # EXEMPLOS:
         #
         # TFLO iShares Treasury Floating Rate Bond ETF US$ 5,895.00
         # STIP iShares 0-5 Year TIPS Bond ETF US$ 2,100.00
         # AMT American Tower Corp US$ 850.00
-        # ==================================================
+        # ==========================================
 
         match = re.search(
 
-            r'^([A-Z]{1,5})\s+.+?US\$\s*([\d,]+\.\d{2})',
+            r'^([A-Z]{1,5})\s+.*?US\$\s*([\d,]+\.\d{2})',
 
             line
         )
@@ -288,27 +289,22 @@ def parse_avenue(text):
             match.group(2)
         )
 
-        # ==================================================
+        # ==========================================
         # VALIDAÇÕES
-        # ==================================================
+        # ==========================================
 
         if valor <= 0:
             continue
 
-        # evita lixo
+        # ignora palavras falsas
         if ticker in [
 
             "SALDO",
             "TOTAL",
             "APORTES",
-            "JUROS",
-            "VARIACAO"
+            "JUROS"
 
         ]:
-            continue
-
-        # ticker muito grande normalmente é erro
-        if len(ticker) > 5:
             continue
 
         data.append({
@@ -331,9 +327,9 @@ def parse_btg(text):
 
     data = []
 
-    # ==================================================
+    # ==========================================
     # RENDA VARIÁVEL
-    # ==================================================
+    # ==========================================
 
     rv_matches = re.findall(
 
@@ -359,9 +355,9 @@ def parse_btg(text):
 
         })
 
-    # ==================================================
+    # ==========================================
     # FUNDOS
-    # ==================================================
+    # ==========================================
 
     fundo_matches = re.findall(
 
@@ -474,13 +470,35 @@ def consolidar(lista):
 
 def detectar_parser(text):
 
-    if "POSIÇÃO DETALHADA DOS ATIVOS" in text:
+    text_upper = text.upper()
+
+    # ==========================================
+    # XP
+    # ==========================================
+
+    if "POSIÇÃO DETALHADA DOS ATIVOS" in text_upper:
         return parse_xp
 
-    if "Avenue Securities" in text:
+    # ==========================================
+    # AVENUE
+    # ==========================================
+
+    if any(x in text_upper for x in [
+
+        "AVENUE",
+        "NYSE",
+        "NASDAQ",
+        "US$",
+        "DIAGNÓSTICO DA CARTEIRA"
+
+    ]):
         return parse_avenue
 
-    if "Relatório de Performance" in text:
+    # ==========================================
+    # BTG
+    # ==========================================
+
+    if "RELATÓRIO DE PERFORMANCE" in text_upper:
         return parse_btg
 
     return None
