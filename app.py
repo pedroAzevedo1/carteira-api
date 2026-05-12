@@ -5,445 +5,224 @@ import pdfplumber
 import re
 from typing import List, Dict, Optional
 
-# ======================================================
-# CONFIG
-# ======================================================
-
 app = Flask(__name__)
 CORS(app)
 
-# ======================================================
-# CONSTANTES
-# ======================================================
+# ======================================
+# CONFIG
+# ======================================
 
 INVALID_TICKERS = {
-    "US",
-    "USD",
-    "ETF",
-    "INC",
-    "LLC",
-    "CORP",
-    "PLC",
-    "ADR",
-    "NYSE",
-    "NASDAQ",
-    "CASH",
-    "TOTAL",
-    "SALDO",
-    "JUROS",
-    "APORTES",
-    "DADOS",
-    "POR",
-    "DAS",
-    "DOS",
-    "E",
-    "OS",
-    "AS",
-    "DA",
-    "DO",
-    "DE"
+    "US","USD","ETF","INC","LLC","CORP","PLC","ADR",
+    "NYSE","NASDAQ","CASH","TOTAL","SALDO","JUROS",
+    "APORTES","DADOS","POR","DAS","DOS","E","OS",
+    "AS","DA","DO","DE"
 }
 
-XP_IGNORE_TERMS = {
-    "TOTAL",
-    "POSIÇÃO",
-    "ESTRATÉGIA",
-    "SALDO BRUTO",
-    "RENT.",
-    "%CDI",
-    "MÊS ATUAL",
-    "ANO",
-    "24 MESES",
-    "PÓS FIXADO",
-    "FUNDOS LISTADOS",
-    "CAIXA"
-}
-
-# ======================================================
+# ======================================
 # HELPERS
-# ======================================================
-
+# ======================================
 
 def normalize_spaces(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
-
-def parse_brl(value: str) -> float:
+def parse_number(value: str) -> float:
+    """
+    Aceita:
+    2.984,52
+    2984,52
+    2,984.52
+    """
     try:
-        cleaned = (
-            value
-            .replace("R$", "")
-            .replace(".", "")
-            .replace(",", ".")
-            .strip()
-        )
+        value = value.replace("R$", "").replace("US$", "").strip()
 
-        return float(cleaned)
+        if "," in value and "." in value:
+            # formato brasileiro
+            value = value.replace(".", "").replace(",", ".")
+        elif "," in value:
+            value = value.replace(",", ".")
 
-    except Exception:
+        return float(value)
+    except:
         return 0.0
-
-
-
-def parse_usd(value: str) -> float:
-    try:
-        cleaned = (
-            value
-            .replace("US$", "")
-            .replace(",", "")
-            .strip()
-        )
-
-        return float(cleaned)
-
-    except Exception:
-        return 0.0
-
 
 
 def parse_percent(value: str) -> Optional[float]:
     try:
-        cleaned = (
-            value
-            .replace("%", "")
-            .replace(",", ".")
-            .strip()
-        )
-
-        return float(cleaned)
-
-    except Exception:
+        return float(value.replace("%", "").replace(",", "."))
+    except:
         return None
 
 
+def classify_asset(nome: str, moeda: str) -> str:
+    nome = nome.upper()
 
-def classify_asset(name: str, currency: str) -> str:
-    upper_name = name.upper()
-
-    if currency == "USD":
+    if moeda == "USD":
         return "Internacional"
 
-    if re.match(r"^[A-Z]{4}\d{1,2}$", upper_name):
+    if re.match(r"^[A-Z]{4}\d{1,2}$", nome):
         return "Renda Variável"
 
-    if "FII" in upper_name:
+    if "FII" in nome:
         return "Renda Variável"
-
-    if "ETF" in upper_name:
-        return "Internacional"
 
     return "Renda Fixa"
 
 
-
-def build_asset(
-    ativo: str,
-    valor: float,
-    moeda: str,
-    rentabilidade: Optional[float] = None,
-    classe: Optional[str] = None
-) -> Dict:
-
+def build_asset(ativo, valor, moeda, rentabilidade=None):
     return {
         "ativo": ativo,
         "valor": valor,
         "moeda": moeda,
-        "classe": classe or classify_asset(ativo, moeda),
+        "classe": classify_asset(ativo, moeda),
         "rentabilidade": rentabilidade
     }
 
-# ======================================================
-# XP PARSER
-# ======================================================
-
+# ======================================
+# XP PARSER (mantido simples)
+# ======================================
 
 def parse_xp(text: str) -> List[Dict]:
 
     assets = []
 
-    match = re.search(
-        r"POSIÇÃO DETALHADA DOS ATIVOS(.*?)(Relatório informativo|$)",
-        text,
-        re.S
-    )
+    lines = text.split("\n")
 
-    if not match:
-        return assets
+    for line in lines:
 
-    section = match.group(1)
-
-    for raw_line in section.split("\n"):
-
-        line = normalize_spaces(raw_line)
-        upper_line = line.upper()
-
-        if any(term in upper_line for term in XP_IGNORE_TERMS):
+        if "R$" not in line:
             continue
 
         name_match = re.match(r"^(.*?)\s+R\$", line)
-
-        if not name_match:
-            continue
-
         value_match = re.search(r"R\$\s*([\d\.,]+)", line)
 
-        if not value_match:
+        if not name_match or not value_match:
             continue
 
-        asset_name = name_match.group(1).strip()
-        asset_value = parse_brl(value_match.group(1))
+        nome = name_match.group(1).strip()
+        valor = parse_number(value_match.group(1))
 
-        if asset_value <= 0:
+        if valor <= 0:
             continue
 
-        percentages = re.findall(r"([\-\+]?\d+,\d+)%", line)
+        percents = re.findall(r"([\-\+]?\d+,\d+)%", line)
 
-        profitability = None
+        rent = None
+        if len(percents) >= 2:
+            rent = parse_percent(percents[1])
 
-        # XP:
-        # 0 = peso
-        # 1 = rentabilidade
-
-        if len(percentages) >= 2:
-            profitability = parse_percent(percentages[1])
-
-        assets.append(
-            build_asset(
-                ativo=asset_name,
-                valor=asset_value,
-                moeda="BRL",
-                rentabilidade=profitability
-            )
-        )
+        assets.append(build_asset(nome, valor, "BRL", rent))
 
     return assets
 
-# ======================================================
-# AVENUE PARSER
-# ======================================================
-
+# ======================================
+# 🔥 AVENUE PARSER CORRIGIDO
+# ======================================
 
 def parse_avenue(text: str) -> List[Dict]:
 
     assets = []
 
-    text = (
-        text
-        .replace("\r", "\n")
-        .upper()
-    )
+    text = text.replace("\r", "\n")
+    lines = text.split("\n")
 
-    text = re.sub(
-        r'\s+',
-        ' ',
-        text
-    )
+    for line in lines:
 
-    matches = re.findall(
-        r'\b([A-Z]{1,5})\b.*?US\$\s*([\d,]+\.\d{2})',
-        text
-    )
+        line = normalize_spaces(line)
 
-    found_assets = {}
+        # ignora linhas irrelevantes
+        if len(line) < 20:
+            continue
 
-    for ticker, value_string in matches:
+        if not any(x in line for x in ["ETF", "Stock", "Stocks", "ETF's"]):
+            continue
 
-        ticker = ticker.strip()
+        # pega ticker (palavra curta)
+        ticker_match = re.search(r"\b([A-Z]{2,5})\b", line)
+
+        if not ticker_match:
+            continue
+
+        ticker = ticker_match.group(1)
 
         if ticker in INVALID_TICKERS:
             continue
 
-        if len(ticker) > 5:
+        # pega valores tipo 1.234,56
+        values = re.findall(r"\d{1,3}(?:\.\d{3})*,\d{2}", line)
+
+        if not values:
             continue
 
-        value = parse_usd(value_string)
+        # último número da linha = volume
+        value_str = values[-1]
 
-        if value <= 0:
+        valor = parse_number(value_str)
+
+        if valor <= 0:
             continue
 
-        if value < 1:
-            continue
-
-        if ticker not in found_assets:
-            found_assets[ticker] = value
-        else:
-            found_assets[ticker] = max(found_assets[ticker], value)
-
-    for ticker, value in found_assets.items():
-
-        assets.append(
-            build_asset(
-                ativo=ticker,
-                valor=value,
-                moeda="USD",
-                classe="Internacional"
-            )
-        )
+        assets.append(build_asset(ticker, valor, "USD"))
 
     return assets
 
-# ======================================================
-# BTG PARSER
-# ======================================================
-
+# ======================================
+# BTG PARSER (mantido)
+# ======================================
 
 def parse_btg(text: str) -> List[Dict]:
 
     assets = []
 
-    equity_matches = re.findall(
-        r"([A-Z]{4,6}\d{0,2})\s+([\d\.]+,\d{2})",
-        text
-    )
+    matches = re.findall(r"([A-Z]{4,6}\d{0,2})\s+([\d\.]+,\d{2})", text)
 
-    for ticker, value_string in equity_matches:
+    for ticker, val in matches:
+        valor = parse_number(val)
 
-        value = parse_brl(value_string)
-
-        if value <= 0:
-            continue
-
-        assets.append(
-            build_asset(
-                ativo=ticker,
-                valor=value,
-                moeda="BRL",
-                classe="Renda Variável"
-            )
-        )
-
-    fund_matches = re.findall(
-        r"(KAPITALO.*?|BTG.*?FIRF.*?)\s+([\d\.]+,\d{2})",
-        text
-    )
-
-    for fund_name, value_string in fund_matches:
-
-        value = parse_brl(value_string)
-
-        if value <= 0:
-            continue
-
-        assets.append(
-            build_asset(
-                ativo=fund_name.strip(),
-                valor=value,
-                moeda="BRL",
-                classe="Fundo"
-            )
-        )
+        if valor > 0:
+            assets.append(build_asset(ticker, valor, "BRL"))
 
     return assets
 
-# ======================================================
-# CONSOLIDAÇÃO
-# ======================================================
-
-
-def consolidate_assets(assets: List[Dict]) -> List[Dict]:
-
-    grouped_assets = {}
-
-    for asset in assets:
-
-        key = f"{asset['ativo']}_{asset['moeda']}"
-
-        if key not in grouped_assets:
-
-            grouped_assets[key] = {
-                "ativo": asset["ativo"],
-                "valor": 0,
-                "moeda": asset["moeda"],
-                "classe": asset["classe"],
-                "somaRent": 0,
-                "somaBase": 0
-            }
-
-        grouped_assets[key]["valor"] += asset["valor"]
-
-        profitability = asset.get("rentabilidade")
-
-        if profitability is not None:
-
-            grouped_assets[key]["somaRent"] += (
-                profitability * asset["valor"]
-            )
-
-            grouped_assets[key]["somaBase"] += asset["valor"]
-
-    consolidated = []
-
-    for asset in grouped_assets.values():
-
-        profitability = None
-
-        if asset["somaBase"] > 0:
-
-            profitability = (
-                asset["somaRent"] / asset["somaBase"]
-            )
-
-        consolidated.append({
-            "ativo": asset["ativo"],
-            "valor": asset["valor"],
-            "moeda": asset["moeda"],
-            "classe": asset["classe"],
-            "rentabilidade": profitability
-        })
-
-    return consolidated
-
-# ======================================================
+# ======================================
 # DETECTOR
-# ======================================================
-
+# ======================================
 
 def detect_parser(text: str):
 
-    upper_text = text.upper()
+    t = text.upper()
 
-    if "POSIÇÃO DETALHADA DOS ATIVOS" in upper_text:
+    if "POSIÇÃO DETALHADA" in t:
         return parse_xp
 
-    if any(keyword in upper_text for keyword in [
-        "AVENUE",
-        "NYSE",
-        "NASDAQ",
-        "US$",
-        "DIAGNÓSTICO DA CARTEIRA"
-    ]):
+    if "AVENUE" in t or "US$" in t or "ETF'S" in t:
         return parse_avenue
 
-    if "RELATÓRIO DE PERFORMANCE" in upper_text:
+    if "RELATÓRIO DE PERFORMANCE" in t:
         return parse_btg
 
     return None
 
-# ======================================================
-# PDF EXTRACTION
-# ======================================================
+# ======================================
+# EXTRAÇÃO
+# ======================================
 
+def extract_pdf_text(file):
 
-def extract_pdf_text(file) -> str:
-
-    full_text = ""
+    full = ""
 
     with pdfplumber.open(file) as pdf:
-
         for page in pdf.pages:
+            txt = page.extract_text()
+            if txt:
+                full += txt + "\n"
 
-            extracted_text = page.extract_text()
+    return full
 
-            if extracted_text:
-                full_text += extracted_text + "\n"
-
-    return full_text
-
-# ======================================================
-# ROUTES
-# ======================================================
-
+# ======================================
+# ROTA
+# ======================================
 
 @app.route("/upload", methods=["POST"])
 def upload():
@@ -455,38 +234,24 @@ def upload():
     for file in files:
 
         try:
-
             text = extract_pdf_text(file)
-
-            print("\n================ PDF ================\n")
-            print(text[:5000])
 
             parser = detect_parser(text)
 
             if not parser:
-                print("Nenhum parser detectado")
                 continue
 
-            extracted_assets = parser(text)
+            assets = parser(text)
 
-            print("\nATIVOS ENCONTRADOS:")
-            print(extracted_assets)
+            all_assets.extend(assets)
 
-            all_assets.extend(extracted_assets)
-
-        except Exception as error:
-
-            print(f"Erro ao processar arquivo: {error}")
-
-    consolidated_assets = consolidate_assets(all_assets)
+        except Exception as e:
+            print("Erro:", e)
 
     return jsonify({
-        "ativos": consolidated_assets
+        "ativos": all_assets
     })
 
-# ======================================================
-# START
-# ======================================================
 
 if __name__ == "__main__":
     app.run(debug=True)
