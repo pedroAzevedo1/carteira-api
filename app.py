@@ -24,7 +24,9 @@ XP_IGNORE = [
     "FUNDOS LISTADOS",
     "CAIXA",
     "ESTRATÉGIA",
-    "SALDO BRUTO"
+    "SALDO BRUTO",
+    "MÊS",
+    "ANO"
 ]
 
 # ======================================
@@ -81,7 +83,7 @@ def build_asset(ativo, valor, moeda, rentabilidade=None):
     }
 
 # ======================================
-# XP PARSER (CORRIGIDO)
+# XP PARSER (CORRETO)
 # ======================================
 
 def parse_xp(text: str) -> List[Dict]:
@@ -122,18 +124,25 @@ def parse_xp(text: str) -> List[Dict]:
         if valor <= 0:
             continue
 
+        # 🔥 CORREÇÃO PRINCIPAL
         percents = re.findall(r"([\-\+]?\d+,\d+)%", line)
 
         rent = None
-        if percents:
-            rent = parse_percent(percents[0])
 
-        assets.append(build_asset(nome, valor, "BRL", rent))
+        # XP estrutura:
+        # [0] peso
+        # [1] rentabilidade (correta)
+        if len(percents) >= 2:
+            rent = parse_percent(percents[1])
+
+        assets.append(
+            build_asset(nome, valor, "BRL", rent)
+        )
 
     return assets
 
 # ======================================
-# AVENUE PARSER (AJUSTADO)
+# AVENUE PARSER (ESTÁVEL)
 # ======================================
 
 def parse_avenue(text: str) -> List[Dict]:
@@ -173,14 +182,16 @@ def parse_avenue(text: str) -> List[Dict]:
         if valor <= 0:
             continue
 
-        # VAR%
+        # Avenue (VAR %)
         percents = re.findall(r"([\+\-]?\d+,\d+)%", line)
 
         rent = None
         if percents:
             rent = parse_percent(percents[0])
 
-        assets.append(build_asset(ticker, valor, "USD", rent))
+        assets.append(
+            build_asset(ticker, valor, "USD", rent)
+        )
 
     return assets
 
@@ -201,7 +212,7 @@ def detect_parser(text: str):
     return None
 
 # ======================================
-# EXTRAÇÃO
+# EXTRAÇÃO PDF
 # ======================================
 
 def extract_pdf_text(file):
@@ -244,7 +255,9 @@ def upload():
         except Exception as e:
             print("Erro:", e)
 
-    return jsonify({"ativos": all_assets})
+    return jsonify({
+        "ativos": all_assets
+    })
 
 # ======================================
 # START
